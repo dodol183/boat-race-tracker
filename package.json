@@ -1,0 +1,24 @@
+{
+  "name": "boat-race-tracker",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "tsc -b",
+    "build": "npm run build -w @brt/app",
+    "start": "npm start -w @brt/server",
+    "deploy:build": "npm run build && node scripts/build-deploy.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <!-- Boat Race Tracker: two sails, a hull and a wave. Drawn inside Android's adaptive-icon safe
+       circle (radius 33 around the centre), on a transparent background. -->
+  <path d="M53 25 L53 69 L33 69 Z" fill="#ffffff"/>
+  <path d="M57 33 L57 69 L75 69 Z" fill="#ffffff" opacity="0.9"/>
+  <path d="M32 72 L77 72 L70 80 L40 80 Z" fill="#f97316"/>
+  <path d="M30 85 Q38 81 46 85 T62 85 T78 85" fill="none" stroke="#5aa2ff" stroke-width="3" stroke-linecap="round"/>
+</svg>

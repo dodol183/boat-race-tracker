@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icon while sharing the position: a sail, white on transparent as Android expects -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11,2 L11,16 L4,16 Z M13,5 L19,16 L13,16 Z M3,18 L21,18 L18.5,21 L5.5,21 Z" />
+</vector>

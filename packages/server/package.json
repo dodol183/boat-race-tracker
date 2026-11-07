@@ -1,0 +1,18 @@
+{
+  "name": "@brt/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs regattas: commands in, events out, stored in SQLite, sent to every device over WebSocket.",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "test": "node --import tsx --test --test-timeout=60000 tests/*.test.ts"
+  },
+  "dependencies": {
+    "@brt/engine": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  }
+}
