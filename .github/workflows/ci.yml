@@ -1,5 +1,7 @@
-# Tests on every push and pull request; then the Android app, as a debug APK to install by hand
-# (Actions → the run → Artifacts). The server address built into the app comes from the repository
+# Tests on every push and pull request; then the Android app, as a debug APK to install by hand.
+# The latest build is published as the "test-build" pre-release, at a link a phone can open:
+#   https://github.com/<owner>/<repo>/releases/download/test-build/boat-race-tracker-test.apk
+# (and also kept with each run under Artifacts). The server address built into the app comes from the repository
 # variable BRT_SERVER_URL (Settings → Secrets and variables → Actions → Variables); without it the
 # app asks for the server on its join screen.
 name: CI
@@ -27,6 +29,9 @@ jobs:
   android:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      # To publish the test-build pre-release
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -54,3 +59,18 @@ jobs:
           name: boat-race-tracker-debug-apk
           path: packages/app/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+      - name: Publish as the test-build pre-release
+        # Not for pull requests from forks: their builds can't publish here
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          cp packages/app/android/app/build/outputs/apk/debug/app-debug.apk boat-race-tracker-test.apk
+          gh release delete test-build --yes --cleanup-tag || true
+          gh release create test-build boat-race-tracker-test.apk \
+            --prerelease \
+            --target "$SHA" \
+            --title "Test build (${BRANCH}, ${SHA:0:7})" \
+            --notes "Debug build for testing, from ${BRANCH} at ${SHA:0:7}. Open this page on the Android phone, tap boat-race-tracker-test.apk, and allow installing from your browser when asked. Uninstall the previous test build first: each one is signed with a new debug key."

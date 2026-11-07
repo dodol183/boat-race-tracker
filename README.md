@@ -73,9 +73,11 @@ The same pages, packaged with Capacitor in `packages/app/android`. It adds what 
 sharing the phone's position with the screen off (a foreground service with a notification) and
 native Bluetooth to Meshtastic radios. The website does Bluetooth too, in Chrome.
 
-- **Get it:** every push builds a debug APK on GitHub Actions (the CI workflow, Artifacts:
-  `boat-race-tracker-debug-apk`). Install it on an Android phone (allow installing from this
-  source when asked). Each build is signed with a new debug key, so uninstall the previous one first.
+- **Get it:** every build publishes a debug APK as the **Test build** pre-release (Releases, on
+  the repository page). On the Android phone, open
+  `https://github.com/dodol183/boat-race-tracker/releases/download/test-build/boat-race-tracker-test.apk`
+  and allow installing from the browser when asked. Each build is signed with a new debug key, so
+  uninstall the previous one first. (Each CI run also keeps it under Artifacts, zipped.)
 - **Server:** set the repository variable `BRT_SERVER_URL` (e.g. `https://race.yourclub.org`) to
   build it into the app; otherwise the app asks for it on the join screen.
 - **Build it yourself:** with Android Studio or the Android SDK and Java 21:
