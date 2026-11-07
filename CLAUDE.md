@@ -40,6 +40,10 @@ view. Anything else waits.
   recording of a real T-Echo; never add uncleaned radio recordings. `src/lib/platform.ts` decides
   where the server is (the site, or the address set in the app).
 
+- **Practice boats** (trackers `sim-…`) are sailed by `packages/server/src/practice.ts` while
+  `options.practiceBoatsSail` is on. A boat's position is a pure function of the race and the time,
+  so several server processes agree; keep it that way.
+
 ## Commands
 
 - `npm install`, `npm test`, `npm run typecheck`, `npm run build` (Node 22.13+).

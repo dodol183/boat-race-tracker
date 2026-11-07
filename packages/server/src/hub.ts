@@ -2,6 +2,7 @@
 import { advance, apply, cleanFixes, decide, emptyRegatta, gpsSuggestions, mergeTrail, trackerId as toTrackerId, type Command, type Fix, type RegattaState } from '@brt/engine';
 import type { CommandRecord, Store, StoredEvent } from './store.ts';
 import type { PositionsUpdate, Suggestions } from './protocol.ts';
+import { PRACTICE_FIX_MS, practiceBoats, practiceFix } from './practice.ts';
 
 export type Role = 'OFFICER' | 'SKIPPER' | 'SPECTATOR';
 
@@ -41,6 +42,7 @@ export class RegattaHub {
   private unbound = new Map<string, number>();
   private suggestionsJson = '{"over":[],"finishes":[]}';
   private lastFixSync: number;
+  private lastPracticeFix = 0;
   private lastSuggest = 0;
 
   constructor(
@@ -115,9 +117,23 @@ export class RegattaHub {
       if (!isConflict(err)) throw err;
       stored = this.syncFromStore();
     }
+    this.sailPracticeBoats();
     // Suggestions also change with time (X can only fly for 4 minutes)
     if (this.now() - this.lastSuggest >= 1000) this.refreshSuggestions();
     return [...synced, ...stored];
+  }
+
+  /** Moves the practice boats, one fix each on the shared 3 s grid (see practice.ts) */
+  private sailPracticeBoats() {
+    if (!this.state.options?.practiceBoatsSail) return;
+    const grid = Math.floor(this.now() / PRACTICE_FIX_MS) * PRACTICE_FIX_MS;
+    if (grid <= this.lastPracticeFix) return;
+    this.lastPracticeFix = grid;
+    const boats = practiceBoats(this.state);
+    boats.forEach((b, i) => {
+      const fix = practiceFix(this.state, b, i, boats.length, grid);
+      if (fix) this.acceptPositions('OFFICER', b.trackerId!, [fix]);
+    });
   }
 
   // ------------------------------------------------------------------- more than one process

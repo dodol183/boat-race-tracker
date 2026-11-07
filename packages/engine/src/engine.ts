@@ -4,7 +4,7 @@
 // state can always be rebuilt by applying them in order.
 import { emptyRegatta, type Boat, type Course, type Entry, type PenaltyCode, type Race, type RaceClass, type RatingSystem, type RegattaOptions, type RegattaState } from './types.ts';
 import { distanceM, isPoint, startLineOffset } from './geo.ts';
-import { isPhoneTracker, trackerId } from './tracking.ts';
+import { isPhoneTracker, isPracticeTracker, trackerId } from './tracking.ts';
 
 export const MINUTE = 60_000;
 /** RRS 29.1: X comes down once every recalled boat has returned, and no later than 4 minutes after the start */
@@ -183,7 +183,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       const b = state.boats[cmd.boatId];
       if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
       const id = trackerId(cmd.trackerId);
-      if (!id) return refuse('BAD_TRACKER', 'That is not a tracker this app knows.');
+      if (!id || isPracticeTracker(id)) return refuse('BAD_TRACKER', 'That is not a tracker this app knows.');
       // Asking again for the connection already there is fine
       if (b.trackerId === id) return accept();
       // A skipper can't replace another tracker, so can't take another boat off the map
@@ -227,9 +227,14 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'setOptions': {
-      const v = cmd.options?.skippersConnectTrackers;
-      if (v !== undefined && typeof v !== 'boolean') return refuse('BAD_OPTION', 'That setting could not be read.');
-      return accept({ type: 'optionsSet', options: { ...emptyRegatta().options, ...state.options, ...(v !== undefined ? { skippersConnectTrackers: v } : {}) } });
+      const next: RegattaOptions = { ...emptyRegatta().options, ...state.options };
+      for (const k of ['skippersConnectTrackers', 'practiceBoatsSail'] as const) {
+        const v = cmd.options?.[k];
+        if (v === undefined) continue;
+        if (typeof v !== 'boolean') return refuse('BAD_OPTION', 'That setting could not be read.');
+        next[k] = v;
+      }
+      return accept({ type: 'optionsSet', options: next });
     }
 
     case 'startSequence': {

@@ -25,7 +25,7 @@ export function MapTab({ client, regatta, tracks, relay }: { client: RegattaClie
                 <li key={b.id} className="flex items-center gap-3 py-2">
                   <span className="flex-1 min-w-0">
                     <span className="font-semibold">{b.sailNumber}</span> <span className="text-muted text-sm">{b.name}</span>
-                    <span className="block text-sm text-muted">{b.trackerId ? (b.trackerId.startsWith('phone-') ? 'Skipper’s phone' : `Tracker ${b.trackerId}`) : 'No tracker'}</span>
+                    <span className="block text-sm text-muted">{b.trackerId ? (b.trackerId.startsWith('phone-') ? 'Skipper’s phone' : b.trackerId.startsWith('sim-') ? 'Practice boat, sailed by the server' : `Tracker ${b.trackerId}`) : 'No tracker'}</span>
                   </span>
                   {!b.trackerId ? (
                     <Pill tone="muted">Not tracked</Pill>

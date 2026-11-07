@@ -87,6 +87,8 @@ export interface Course {
 export interface RegattaOptions {
   /** Skippers may connect their own phone or tracker to a boat that has none */
   skippersConnectTrackers: boolean;
+  /** The server sails the practice boats (trackers "sim-…") round the course */
+  practiceBoatsSail?: boolean;
 }
 
 export interface RegattaState {

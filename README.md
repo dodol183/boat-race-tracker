@@ -30,6 +30,13 @@ npm run build     # the app, into packages/app/dist
 While working on the screens, run the server (below) and `npm run dev -w @brt/app`. Vite serves the
 app on port 5173 and passes `/api` and `/ws` to the server on port 3000.
 
+## Practice race
+
+Setup → **Practice race** adds five pretend boats the server sails round the course: they wait
+below the line, one jumps the gun, and they finish at different speeds. Start the Practice class to
+try every screen alone, or to show the club. Their positions go through the same path as real
+trackers. The steps for a test with real hardware are in [docs/DESK_TEST.md](docs/DESK_TEST.md).
+
 ## Sailwave
 
 Results → Export (on the website, race office) gives two files per class for Sailwave: the

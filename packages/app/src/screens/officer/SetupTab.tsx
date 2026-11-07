@@ -21,6 +21,7 @@ export function SetupTab({ client, regatta, heard, tracks }: { client: RegattaCl
       <ShareCard client={client} />
       <TrackersCard client={client} regatta={regatta} heard={heard} />
       <CourseCard client={client} regatta={regatta} tracks={tracks} />
+      <PracticeCard client={client} regatta={regatta} />
       {classes.map((c) => (
         <ClassSection key={c.id} cls={c} regatta={regatta} client={client} />
       ))}
@@ -385,6 +386,78 @@ function CourseCard({ client, regatta, tracks }: { client: RegattaClient; regatt
         <Button tone="primary" disabled={!changed} onClick={() => void client.send({ type: 'setCourse', course: wanted })}>Save course</Button>
         {changed && <Button tone="quiet" onClick={() => { setDraft(saved); setFinishOnStart(!saved.finishPin); }}>Undo changes</Button>}
       </div>
+    </Card>
+  );
+}
+
+const PRACTICE_CLASS = 'practice';
+const PRACTICE_BOATS = 5;
+
+/**
+ * Five pretend boats the server sails round the course: to try a race alone, or show the club.
+ * They are an ordinary class ("Practice"), so starts, finishes and results work as on the day.
+ */
+function PracticeCard({ client, regatta }: { client: RegattaClient; regatta: RegattaState }) {
+  const [busy, setBusy] = useState(false);
+  const c = regatta.course ?? {};
+  const hasCourse = !!(c.startPin && c.startCommittee && c.firstMark);
+  const boats = Object.values(regatta.boats).filter((b) => b.trackerId?.startsWith('sim-'));
+  const sailing = regatta.options?.practiceBoatsSail === true;
+  const racing = activeRace(regatta, PRACTICE_CLASS);
+
+  const add = async () => {
+    setBusy(true);
+    const send = (cmd: Parameters<RegattaClient['send']>[0]) => client.send(cmd);
+    if (!regatta.classes[PRACTICE_CLASS]) {
+      const r = await send({ type: 'saveClass', class: { id: PRACTICE_CLASS, name: 'Practice', ratingSystem: 'PY', sequenceMinutes: 3 } });
+      if (!r.ok) return setBusy(false);
+    }
+    for (let i = 1; i <= PRACTICE_BOATS; i++) {
+      const id = `practice-${i}`;
+      if (!regatta.boats[id]) await send({ type: 'saveBoat', boat: { id, classId: PRACTICE_CLASS, sailNumber: `PRAC ${i}`, name: `Practice ${i}`, rating: 1100 } });
+      await send({ type: 'bindTracker', boatId: id, trackerId: `sim-${i}` });
+    }
+    await send({ type: 'setOptions', options: { practiceBoatsSail: true } });
+    setBusy(false);
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    await client.send({ type: 'setOptions', options: { practiceBoatsSail: false } });
+    for (const b of boats) await client.send({ type: 'removeBoat', boatId: b.id });
+    // The class goes too, unless it has races (their results stay)
+    if (!Object.values(regatta.races).some((r) => r.classId === PRACTICE_CLASS)) await client.send({ type: 'removeClass', classId: PRACTICE_CLASS });
+    setBusy(false);
+  };
+
+  return (
+    <Card title="Practice race" actions={boats.length > 0 && <Pill tone={sailing ? 'go' : 'muted'}>{sailing ? 'Sailing' : 'Stopped'}</Pill>}>
+      <p className="text-sm text-muted">
+        Five pretend boats the server sails round your course: they wait below the line, one jumps the gun, and they
+        finish at different speeds. Try the Start, Finishes and Map tabs alone, or show the club.
+      </p>
+      {!hasCourse ? (
+        <p className="font-semibold">Set the start line and first mark first (Course, above).</p>
+      ) : boats.length === 0 ? (
+        <Button tone="primary" disabled={busy} onClick={() => void add()}>{busy ? 'Adding…' : 'Add 5 practice boats'}</Button>
+      ) : (
+        <>
+          <p>
+            Start the <span className="font-semibold">Practice</span> class on the Start tab (a 3-minute sequence). The boats show
+            on the Map tab and to spectators.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void client.send({ type: 'setOptions', options: { practiceBoatsSail: !sailing } })}>{sailing ? 'Stop them sailing' : 'Let them sail'}</Button>
+            <ConfirmButton
+              label="Remove practice boats"
+              confirm="Remove the 5 practice boats"
+              disabled={busy || !!racing}
+              onConfirm={() => void remove()}
+            />
+          </div>
+          {racing && <p className="text-sm text-muted">End or abandon the practice race before removing the boats.</p>}
+        </>
+      )}
     </Card>
   );
 }

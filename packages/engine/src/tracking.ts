@@ -10,6 +10,7 @@ import { crossingFraction, distanceToSegmentM, isPoint, startLineOffset } from '
  * - a Meshtastic radio: "!" and its node number in 8 lowercase hex digits ("!a1b2c3d4"). Accepts
  *   "!A1B2C3D4", "0xa1b2c3d4", "a1b2c3d4" (8 digits, with a letter) or a node number.
  * - a phone sharing its own GPS: "phone-" and 6 to 32 letters or digits, chosen by the phone.
+ * - a practice boat the server sails itself: "sim-" and a few letters or digits.
  * Returns null for anything else.
  */
 export function trackerId(raw: unknown): string | null {
@@ -18,6 +19,8 @@ export function trackerId(raw: unknown): string | null {
   const t = raw.trim();
   const phone = /^phone-([a-z0-9]{6,32})$/i.exec(t);
   if (phone) return `phone-${phone[1]!.toLowerCase()}`;
+  const sim = /^sim-([a-z0-9]{1,16})$/i.exec(t);
+  if (sim) return `sim-${sim[1]!.toLowerCase()}`;
   const prefixed = /^(!|0x)/i.test(t);
   const hex = t.replace(/^!/, '').replace(/^0x/i, '');
   if (prefixed ? /^[0-9a-f]{1,8}$/i.test(hex) : /^(?=.*[a-f])[0-9a-f]{8}$/i.test(hex)) return `!${hex.toLowerCase().padStart(8, '0')}`;
@@ -25,6 +28,7 @@ export function trackerId(raw: unknown): string | null {
 }
 
 export const isPhoneTracker = (id: string) => id.startsWith('phone-');
+export const isPracticeTracker = (id: string) => id.startsWith('sim-');
 
 // ------------------------------------------------------------------------------------------ fixes
 
