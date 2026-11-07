@@ -17,6 +17,10 @@ view. Anything else waits.
 - **Racing rules:** follow the Racing Rules of Sailing (RRS 26 sequence, 27.3/Race Signals AP,
   29.1 X flag, 29.2 general recall, Appendix A scoring). Cite the rule in comments when it matters.
 
+- **Server:** `packages/server`. A `RegattaHub` per regatta stores events before sending them,
+  answers each command id once (resends get the first answer), and fires the start gun on a
+  timer (`tick`). Inject the clock (`now`) in tests instead of waiting.
+
 ## Commands
 
 - `npm install`, `npm test`, `npm run typecheck` (Node 22.13+).

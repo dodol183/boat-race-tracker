@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Race rules: start sequences, recalls, finishes, penalties and scoring. Pure functions, no I/O.",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test --test-timeout=60000 tests/*.test.ts"
   }
 }

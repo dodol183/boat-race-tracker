@@ -13,7 +13,7 @@ show what the server sends back. The plan, scope and phases are in [docs/PLAN.md
 | Package | What it is | Status |
 |---|---|---|
 | [`packages/engine`](packages/engine) | Racing rules as pure functions: start sequence, AP, general and individual recall, finishes, penalty codes, corrected time, race and series scoring (RRS Appendix A) | Phase 1: done, with tests |
-| `packages/server` | Node server: commands, event log in SQLite, WebSocket to devices | Phase 2 |
+| [`packages/server`](packages/server) | Node server: runs the engine, stores every event in SQLite, keeps devices in step over WebSocket | Phase 2: done, with tests |
 | `packages/app` | React app (website + Android app via Capacitor) for race officers, skippers and spectators | Phases 3–4 |
 
 ## Develop
@@ -25,6 +25,24 @@ npm install
 npm test          # all packages
 npm run typecheck
 ```
+
+## Run the server
+
+```sh
+ADMIN_TOKEN=<at least 16 characters> DATA_DIR=./data npm start -w @brt/server
+# create a regatta (returns its code and the race officer and skipper PINs)
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"name":"Club Race"}' localhost:3000/api/regattas
+```
+
+Devices connect to `ws://host/ws` and send `{"t":"hello","regattaId":"<code>","pin":"<PIN>"}`.
+The PIN decides the role: race officer (commands), skipper or spectator (watch). See
+[`protocol.ts`](packages/server/src/protocol.ts) for every message.
+
+- Each command carries an `id` chosen by the device. A resent command gets the first answer again
+  and changes nothing, so a device can safely resend after losing its connection.
+- Events are numbered. A device that reconnects sends the last number it has and gets only what
+  it missed; one that sees a gap sends `resync` for the whole state.
+- Events are stored before they are sent, so a restart restores the race exactly.
 
 ## How the engine works
 
