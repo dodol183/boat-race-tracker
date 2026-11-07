@@ -4,6 +4,9 @@ import './styles.css';
 import { Join, type Joined } from './screens/Join.tsx';
 import { RegattaScreen } from './screens/RegattaScreen.tsx';
 import { safeStorage } from './lib/useRegatta.ts';
+import { applySavedSunlight } from './lib/sunlight.ts';
+
+applySavedSunlight();
 
 const LAST = 'brt:last-joined';
 

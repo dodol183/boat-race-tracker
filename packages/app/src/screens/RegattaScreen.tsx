@@ -10,6 +10,7 @@ import { LiveTab } from './LiveTab.tsx';
 import { TrackTab } from './TrackTab.tsx';
 import { MapTab } from './officer/MapTab.tsx';
 import { createGps } from '../lib/gps.ts';
+import { useSunlight } from '../lib/sunlight.ts';
 import { MeshtasticRelay } from '../lib/meshtastic/relay.ts';
 import { openRadio } from '../lib/meshtastic/bleLink.ts';
 
@@ -35,6 +36,7 @@ const WATCH_TABS: { id: Tab; label: string }[] = [
 export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (why?: string) => void }) {
   const { client, snap } = useRegatta(joined.regattaId, joined.pin);
   const officer = snap.role === 'OFFICER';
+  const [sunlight, setSunlight] = useSunlight();
   const tabs = officer ? OFFICER_TABS : snap.role === 'SKIPPER' ? SKIPPER_TABS : WATCH_TABS;
   // One GPS per joined regatta, so sharing carries on while other tabs are open
   const gps = useMemo(() => createGps(client), [client]);
@@ -75,6 +77,16 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
           </span>
         )}
         {status}
+        <button
+          type="button"
+          aria-pressed={sunlight}
+          aria-label="Sunlight: high contrast for bright sun"
+          title="Sunlight: high contrast for bright sun"
+          onClick={() => setSunlight(!sunlight)}
+          className={`min-h-11 min-w-11 rounded-full text-xl ${sunlight ? 'bg-ink text-canvas' : 'border border-line'}`}
+        >
+          ☀
+        </button>
         <Button tone="quiet" onClick={() => onLeave()}>Leave</Button>
       </header>
 

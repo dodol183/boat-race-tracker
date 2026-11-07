@@ -31,6 +31,27 @@
   }
 }
 
+/*
+ * Sunlight: for the water. Black on white whatever the phone's dark mode says, every colour at
+ * least 7:1 (WCAG AAA), stronger borders, slightly larger and heavier text. Switched in the header.
+ */
+:root[data-theme="sun"] {
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  --color-ink: #000000;
+  --color-muted: #1f2937;
+  --color-line: #475569;
+  --color-accent: #003f7f;
+  --color-accent-ink: #ffffff;
+  --color-go: #0b5a2a;
+  --color-warn: #7a3d00;
+  --color-stop: #8f1a10;
+  font-size: 112.5%;
+  color-scheme: light;
+}
+:root[data-theme="sun"] body { font-weight: 500; }
+:root[data-theme="sun"] .border { border-width: 2px; }
+
 html, body, #root { height: 100%; }
 body {
   margin: 0;

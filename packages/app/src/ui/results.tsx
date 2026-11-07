@@ -10,7 +10,8 @@ export function RaceTable({ regatta, race, onPenalty }: { regatta: RegattaState;
   const live = race.phase === 'RACING';
   if (rows.length === 0) return <p className="text-muted">No boats entered yet.</p>;
   return (
-    <div className="overflow-x-auto">
+    // Focusable so it can be scrolled from a keyboard when the table is wider than the screen
+    <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={`Race ${race.number} results`}>
       <table className="w-full text-left">
         <thead className="text-sm text-muted">
           <tr>
@@ -67,7 +68,7 @@ export function SeriesTable({ regatta, classId }: { regatta: RegattaState; class
     .sort((a, b) => a.number - b.number);
   if (races.length === 0) return <p className="text-muted">No races finished yet.</p>;
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Series standings">
       <table className="w-full text-left">
         <thead className="text-sm text-muted">
           <tr>

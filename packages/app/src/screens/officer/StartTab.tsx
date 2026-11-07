@@ -160,7 +160,7 @@ function XFlag({ race, regatta, client, now, over }: { race: Race; regatta: Rega
         {ids.map((id) => (
           <label key={id} className="min-h-11 flex items-center gap-2 px-3 rounded-lg border border-line has-[:checked]:border-stop">
             <input type="checkbox" className="w-5 h-5" checked={chosen.has(id)} onChange={() => setChosen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; })} />
-            <span className="font-semibold">{sail(id)}</span>
+            <span className="font-semibold whitespace-nowrap">{sail(id)}</span>
           </label>
         ))}
       </div>
