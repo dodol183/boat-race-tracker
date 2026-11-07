@@ -159,3 +159,18 @@ test('commands carry no clock of their own: the same command at the same time de
   assert.deepEqual(a.do(cmd, T0 + 30 * MINUTE), b.do(cmd, T0 + 30 * MINUTE));
   assert.ok(new Regatta().state.version === 0);
 });
+
+test('ids from devices: odd ones are refused, and names every object has find nothing', () => {
+  const g = fleet();
+  assert.equal(g.refused({ type: 'saveClass', class: { id: '__proto__', name: 'Odd', ratingSystem: 'IRC' } }), 'BAD_CLASS');
+  assert.equal(g.refused({ type: 'saveClass', class: { id: 'a b', name: 'Spaced', ratingSystem: 'IRC' } }), 'BAD_CLASS');
+  assert.equal(g.refused({ type: 'saveBoat', boat: { id: 'z', classId: '__proto__', sailNumber: 'X 1', name: '', rating: 1 } }), 'NO_SUCH_CLASS');
+  assert.equal(g.refused({ type: 'saveBoat', boat: { id: 'constructor', classId: 'c1', sailNumber: 7 as any, name: '', rating: 1 } }), 'BAD_BOAT');
+  assert.equal(g.refused({ type: 'startSequence', classId: 'constructor' }), 'NO_SUCH_CLASS');
+  assert.equal(g.refused({ type: 'removeBoat', boatId: 'toString' }), 'NO_SUCH_BOAT');
+  assert.equal(g.refused({ type: 'postpone', raceId: 'hasOwnProperty' }), 'NO_SUCH_RACE');
+  g.do({ type: 'startSequence', classId: 'c1' }, g.at(0));
+  g.now = g.at(5.5);
+  assert.equal(g.refused({ type: 'recordFinish', raceId: 'c1-R1', boatId: '__proto__' }), 'NOT_IN_RACE');
+  assert.equal(g.refused({ type: 'individualRecall', raceId: 'c1-R1', boatIds: ['valueOf'] }), 'NOT_IN_RACE');
+});

@@ -76,9 +76,11 @@ export function openStore(path: string) {
 
     createRegatta(name: string, now: number): RegattaRow {
       const id = randomBytes(4).toString('hex').toUpperCase();
-      const officerPin = String(randomInt(0, 10_000)).padStart(4, '0');
-      let skipperPin = String(randomInt(0, 1_000_000)).padStart(6, '0');
-      while (skipperPin.endsWith(officerPin)) skipperPin = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      // Six digits each: a million to guess from, at ten wrong tries per 15 minutes per address
+      const pin = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
+      const officerPin = pin();
+      let skipperPin = pin();
+      while (skipperPin === officerPin) skipperPin = pin();
       db.prepare('INSERT INTO regattas (id, name, officer_pin, skipper_pin, created_at) VALUES (?, ?, ?, ?, ?)').run(id, name, officerPin, skipperPin, now);
       return { id, name, officerPin, skipperPin, createdAt: now };
     },

@@ -114,3 +114,10 @@ test('GPS finish: the first crossing after being well up the course, timed betwe
   assert.deepEqual(gpsSuggestions(g.state, up, now).finishes, [], 'once recorded it is no longer suggested');
   assert.equal(g.state.races['c1-R1']!.entries.b!.finishSource, 'GPS');
 });
+
+test('fixes: to the second, one per second, however fast a device sends them', () => {
+  const now = 1_000_000_000;
+  const flood = Array.from({ length: 100 }, (_, i) => ({ lat: 1, lng: 1 + i / 1e6, fixTime: now - 5000 + i * 10 }));
+  const got = cleanFixes(flood, now);
+  assert.deepEqual(got.map((f) => f.fixTime), [now - 5000, now - 4000]);
+});

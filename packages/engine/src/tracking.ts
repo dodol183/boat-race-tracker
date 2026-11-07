@@ -52,9 +52,9 @@ export const FIX_FUTURE_TOLERANCE_MS = 30_000;
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
 /**
- * The usable fixes from what a device sent, oldest first, one per time: positions in range and not
- * 0,0; times not too far ahead (a fast clock is pulled back to now); speed and heading only when
- * they make sense.
+ * The usable fixes from what a device sent, oldest first, one per second: positions in range and
+ * not 0,0; times not too far ahead (a fast clock is pulled back to now); speed and heading only
+ * when they make sense.
  */
 export function cleanFixes(raw: unknown, now: number): Fix[] {
   if (!Array.isArray(raw)) return [];
@@ -63,7 +63,8 @@ export function cleanFixes(raw: unknown, now: number): Fix[] {
     if (!f || typeof f !== 'object' || !isPoint(f) || !isNum((f as Fix).fixTime)) continue;
     const r = f as Fix;
     if (r.fixTime <= 0 || r.fixTime > now + FIX_FUTURE_TOLERANCE_MS) continue;
-    const fix: Fix = { lat: r.lat, lng: r.lng, fixTime: Math.min(Math.round(r.fixTime), now) };
+    // To the second: plenty for a boat, and a tracker can't store more than one fix a second
+    const fix: Fix = { lat: r.lat, lng: r.lng, fixTime: Math.min(Math.round(r.fixTime / 1000) * 1000, Math.floor(now / 1000) * 1000) };
     if (isNum(r.speedKt) && r.speedKt >= 0 && r.speedKt < 100) fix.speedKt = r.speedKt;
     if (isNum(r.headingDeg) && r.headingDeg >= 0 && r.headingDeg <= 360) fix.headingDeg = r.headingDeg % 360;
     byTime.set(fix.fixTime, fix);

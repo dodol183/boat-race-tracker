@@ -12,6 +12,8 @@ view. Anything else waits.
   comes with a test in `packages/engine/tests`, written as a scripted race.
 - **Events are the record.** `apply` must stay a dumb fold: anything decided (a default code, a
   time) goes into the event payload by `decide`.
+- **Ids come from devices.** Look records up with `own()` in `decide` (never `state.boats[id]`
+  directly): a plain lookup finds `__proto__` or `constructor` on every object.
 - **Refusals are for people.** `Refusal.message` is shown to a race officer on a phone: plain
   words, what to do next.
 - **Racing rules:** follow the Racing Rules of Sailing (RRS 26 sequence, 27.3/Race Signals AP,

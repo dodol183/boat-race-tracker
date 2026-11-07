@@ -100,6 +100,18 @@ export function phaseAt(race: Race, now: number): Race['phase'] {
   return race.phase === 'SEQUENCE' && race.startAt !== undefined && now >= race.startAt ? 'RACING' : race.phase;
 }
 
+/**
+ * A record by id, only if it is really there: ids come from devices, and a plain lookup would find
+ * "__proto__" or "constructor" on every object.
+ */
+function own<T>(rec: Record<string, T>, key: unknown): T | undefined {
+  return typeof key === 'string' && Object.hasOwn(rec, key) ? rec[key] : undefined;
+}
+
+/** Ids chosen by devices for new classes and boats: plain, and not a name every object has */
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const ID = { test: (id: string) => ID_PATTERN.test(id) && !(id in Object.prototype) };
+
 const boatLabel = (state: RegattaState, boatId: string) => state.boats[boatId]?.sailNumber || boatId;
 const normalizeSail = (s: string) => s.trim().toUpperCase().replace(/\s+/g, ' ');
 
@@ -118,13 +130,13 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
   switch (cmd.type) {
     case 'saveClass': {
       const c = cmd.class;
-      if (!c.id?.trim() || !c.name?.trim()) return refuse('BAD_CLASS', 'A class needs a name.');
+      if (typeof c?.id !== 'string' || !ID.test(c.id) || typeof c.name !== 'string' || !c.name.trim()) return refuse('BAD_CLASS', 'A class needs a name.');
       if (!['IRC', 'ORC', 'PY'].includes(c.ratingSystem)) return refuse('BAD_RATING_SYSTEM', 'Choose IRC, ORC or Portsmouth (PY).');
       const minutes = c.sequenceMinutes ?? 5;
       if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10) return refuse('BAD_SEQUENCE', 'The start sequence is 1 to 10 minutes.');
       const clash = Object.values(state.classes).find((o) => o.id !== c.id && o.name.trim().toLowerCase() === c.name.trim().toLowerCase());
       if (clash) return refuse('CLASS_NAME_TAKEN', `There is already a class called ${clash.name}.`);
-      const existing = state.classes[c.id];
+      const existing = own(state.classes, c.id);
       if (existing && existing.ratingSystem !== c.ratingSystem && activeRace(state, c.id)) {
         return refuse('CLASS_RACING', `${existing.name} has a race under way; change its rating system after the race.`);
       }
@@ -132,7 +144,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'removeClass': {
-      const c = state.classes[cmd.classId];
+      const c = own(state.classes, cmd.classId);
       if (!c) return refuse('NO_SUCH_CLASS', 'That class no longer exists.');
       if (Object.values(state.boats).some((b) => b.classId === c.id)) return refuse('CLASS_HAS_BOATS', `Move or remove the boats in ${c.name} first.`);
       if (Object.values(state.races).some((r) => r.classId === c.id)) return refuse('CLASS_HAS_RACES', `${c.name} has races; it can't be removed.`);
@@ -141,8 +153,9 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
 
     case 'saveBoat': {
       const b = cmd.boat;
-      const cls = state.classes[b.classId];
-      if (!b.id?.trim()) return refuse('BAD_BOAT', 'A boat needs an id.');
+      const cls = own(state.classes, b.classId);
+      if (typeof b?.id !== 'string' || !ID.test(b.id)) return refuse('BAD_BOAT', 'A boat needs an id.');
+      if (typeof b.sailNumber !== 'string' || (b.name !== undefined && typeof b.name !== 'string')) return refuse('BAD_BOAT', 'A boat needs a sail number.');
       if (!cls) return refuse('NO_SUCH_CLASS', 'Choose a class for the boat.');
       if (!normalizeSail(b.sailNumber ?? '')) return refuse('NO_SAIL_NUMBER', 'A boat needs a sail number.');
       if (!Number.isFinite(b.rating) || b.rating <= 0) return refuse('BAD_RATING', 'Give the boat a rating.');
@@ -151,7 +164,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       const sail = normalizeSail(b.sailNumber);
       const clash = Object.values(state.boats).find((o) => o.id !== b.id && normalizeSail(o.sailNumber) === sail);
       if (clash) return refuse('SAIL_TAKEN', `${clash.name || clash.sailNumber} already has sail number ${sail}.`);
-      const existing = state.boats[b.id];
+      const existing = own(state.boats, b.id);
       if (existing && existing.classId !== b.classId && isEnteredInActiveRace(state, b.id)) {
         return refuse('BOAT_RACING', `${existing.sailNumber} is in a race under way; change its class after the race.`);
       }
@@ -159,14 +172,14 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'removeBoat': {
-      const b = state.boats[cmd.boatId];
+      const b = own(state.boats, cmd.boatId);
       if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
       if (isEnteredInActiveRace(state, b.id)) return refuse('BOAT_RACING', `${b.sailNumber} is in a race under way; remove it after the race.`);
       return accept({ type: 'boatRemoved', boatId: b.id });
     }
 
     case 'bindTracker': {
-      const b = state.boats[cmd.boatId];
+      const b = own(state.boats, cmd.boatId);
       if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
       if (cmd.trackerId !== null) {
         const id = trackerId(cmd.trackerId);
@@ -180,7 +193,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
 
     case 'claimTracker': {
       if (!state.options?.skippersConnectTrackers) return refuse('CLAIM_OFF', 'The race office has not allowed skippers to connect trackers. Ask them to connect yours.');
-      const b = state.boats[cmd.boatId];
+      const b = own(state.boats, cmd.boatId);
       if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
       const id = trackerId(cmd.trackerId);
       if (!id || isPracticeTracker(id)) return refuse('BAD_TRACKER', 'That is not a tracker this app knows.');
@@ -194,7 +207,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'releaseTracker': {
-      const b = state.boats[cmd.boatId];
+      const b = own(state.boats, cmd.boatId);
       const id = trackerId(cmd.trackerId);
       if (!b || !id || b.trackerId !== id) return refuse('NOT_YOUR_TRACKER', 'This phone is not connected to that boat.');
       // Only a phone: a radio's id is printed on it, so knowing it proves nothing
@@ -238,7 +251,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'startSequence': {
-      const cls = state.classes[cmd.classId];
+      const cls = own(state.classes, cmd.classId);
       if (!cls) return refuse('NO_SUCH_CLASS', 'That class no longer exists.');
       const busy = activeRace(state, cls.id);
       if (busy) return refuse('RACE_UNDER_WAY', `${cls.name} race ${busy.number} is still under way. End or abandon it first.`);
@@ -255,23 +268,23 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'postpone': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'SEQUENCE') return refuse('NOT_BEFORE_START', 'AP can only go up before the start.');
       return accept({ type: 'postponed', raceId: r.id, at: now });
     }
 
     case 'resumeSequence': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'POSTPONED' && r.phase !== 'RECALLED') return refuse('NOT_WAITING', 'The race is not postponed or recalled.');
-      const cls = state.classes[r.classId]!;
+      const cls = own(state.classes, r.classId)!;
       const warningAt = now + RESUME_DELAY_MS;
       return accept({ type: 'sequenceResumed', raceId: r.id, warningAt, startAt: warningAt + cls.sequenceMinutes * MINUTE });
     }
 
     case 'generalRecall': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'RACING') return refuse('NOT_STARTED', 'A general recall is made after the start.');
       if (Object.values(r.entries).some((e) => e.finishAt !== undefined)) return refuse('BOATS_FINISHED', 'Boats have finished; abandon the race instead.');
@@ -279,37 +292,37 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'individualRecall': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'RACING' || r.startedAt === undefined) return refuse('NOT_STARTED', 'X goes up after the start.');
       if (r.xFlag) return refuse('X_ALREADY', 'X has already been used for this start.');
       if (now - r.startedAt >= X_FLAG_LIMIT_MS) return refuse('X_TOO_LATE', 'More than 4 minutes since the start: mark those boats OCS instead.');
       const ids = [...new Set(cmd.boatIds)];
       if (ids.length === 0) return refuse('NO_BOATS', 'Choose the boats over the line.');
-      const stranger = ids.find((id) => !r.entries[id]);
+      const stranger = ids.find((id) => !own(r.entries, id));
       if (stranger) return refuse('NOT_IN_RACE', `${boatLabel(state, stranger)} is not in this race.`);
       return accept({ type: 'xFlagRaised', raceId: r.id, at: now, boatIds: ids });
     }
 
     case 'markReturned': {
-      const r = state.races[cmd.raceId];
-      const e = r?.entries[cmd.boatId];
+      const r = own(state.races, cmd.raceId);
+      const e = (r ? own(r.entries, cmd.boatId) : undefined);
       if (!r || !e) return refuse('NOT_IN_RACE', 'That boat is not in this race.');
       if (!e.ocs) return refuse('NOT_OCS', `${boatLabel(state, cmd.boatId)} is not marked over the line.`);
       return accept({ type: 'boatReturned', raceId: r.id, boatId: cmd.boatId, at: now });
     }
 
     case 'lowerX': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r?.xFlag || r.xFlag.loweredAt !== undefined) return refuse('X_NOT_UP', 'X is not up.');
       return accept({ type: 'xFlagLowered', raceId: r.id, at: now });
     }
 
     case 'recordFinish': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'RACING' || r.startedAt === undefined) return refuse('NOT_RACING', 'Finishes are recorded while the race is on.');
-      const e = r.entries[cmd.boatId];
+      const e = own(r.entries, cmd.boatId);
       if (!e) return refuse('NOT_IN_RACE', 'That boat is not in this race.');
       if (e.finishAt !== undefined) return refuse('ALREADY_FINISHED', `${boatLabel(state, cmd.boatId)} already has a finish.`);
       if (e.penalty && e.penalty !== 'OCS') return refuse('HAS_PENALTY', `${boatLabel(state, cmd.boatId)} is scored ${e.penalty}. Clear that first.`);
@@ -321,8 +334,8 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'undoFinish': {
-      const r = state.races[cmd.raceId];
-      const e = r?.entries[cmd.boatId];
+      const r = own(state.races, cmd.raceId);
+      const e = (r ? own(r.entries, cmd.boatId) : undefined);
       if (!r || !e) return refuse('NOT_IN_RACE', 'That boat is not in this race.');
       if (r.phase !== 'RACING') return refuse('NOT_RACING', 'The race has ended; correct the result with a penalty code instead.');
       if (e.finishAt === undefined) return refuse('NOT_FINISHED', `${boatLabel(state, cmd.boatId)} has no finish.`);
@@ -330,8 +343,8 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'setPenalty': {
-      const r = state.races[cmd.raceId];
-      const e = r?.entries[cmd.boatId];
+      const r = own(state.races, cmd.raceId);
+      const e = (r ? own(r.entries, cmd.boatId) : undefined);
       if (!r || !e) return refuse('NOT_IN_RACE', 'That boat is not in this race.');
       if (r.phase !== 'RACING' && r.phase !== 'FINISHED') return refuse('NOT_STARTED', 'Penalty codes apply once the race has started.');
       if (cmd.code !== null && !['DNC', 'DNS', 'OCS', 'DNF', 'RET', 'DSQ'].includes(cmd.code)) return refuse('BAD_CODE', 'Unknown scoring code.');
@@ -339,7 +352,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'endRace': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase !== 'RACING') return refuse('NOT_RACING', 'Only a race that has started can be ended.');
       // A boat still over the line is OCS, finished or not (RRS A5.1); one with neither a finish nor
@@ -354,7 +367,7 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
     }
 
     case 'abandonRace': {
-      const r = state.races[cmd.raceId];
+      const r = own(state.races, cmd.raceId);
       if (!r) return refuse('NO_SUCH_RACE', 'That race no longer exists.');
       if (r.phase === 'FINISHED' || r.phase === 'ABANDONED') return refuse('RACE_OVER', 'That race is already over.');
       return accept({ type: 'raceAbandoned', raceId: r.id, at: now });

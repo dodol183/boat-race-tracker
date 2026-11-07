@@ -192,8 +192,9 @@ test('server: regattas, roles, commands, resends, catch-up, the gun and restarts
   odd.send({ t: 'command', id: 'x', command: { type: 'saveClass' } });
   assert.equal((await odd.next('error')).code, 'NOT_JOINED');
   await odd.hello(reg.id, reg.officerPin);
+  // A command missing its body is refused in words (and the server carries on)
   const bad = await odd.command('bad-1', { type: 'saveClass' });
-  assert.equal(bad.ok ? '' : bad.error.code, 'BAD_COMMAND');
+  assert.equal(bad.ok ? '' : bad.error.code, 'BAD_CLASS');
   odd.ws.send('not json');
   assert.equal((await odd.next('error')).code, 'BAD_MESSAGE');
   odd.send({ t: 'ping', clientTime: 123 });
@@ -402,4 +403,36 @@ test('server: keeps a daily copy of the database that opens with everything in i
   const copy = openStore(path.join(backupDir, 'now.db'));
   assert.equal(copy.getRegatta(reg.id)?.name, 'Backed up');
   copy.close();
+});
+
+test('server: a made-up X-Forwarded-For doesn’t dodge the PIN limit, and a flooding device is cut off', { timeout: 30_000 }, async () => {
+  const srv = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN });
+  try {
+    const reg = srv.store.createRegatta('Limits', Date.now());
+    assert.match(reg.officerPin, /^\d{6}$/, 'six-digit race office PIN');
+    // Each try claims a different address first; our proxy's entry (last) is the same
+    const tryPin = (claimed: string) =>
+      new Promise<string>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { headers: { 'x-forwarded-for': `${claimed}, 203.0.113.9` } });
+        ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', regattaId: reg.id, pin: '000000' === reg.officerPin ? '000001' : '000000' })));
+        ws.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          ws.close();
+          resolve(m.code ?? m.t);
+        });
+        ws.on('error', reject);
+      });
+    const codes: string[] = [];
+    for (let i = 0; i < 11; i++) codes.push(await tryPin(`10.0.0.${i}`));
+    assert.equal(codes.at(-1), 'TOO_MANY_PIN_TRIES');
+
+    // 300 messages in 10 s is the most; the next closes the socket
+    const flood = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`);
+    await new Promise((r) => flood.once('open', r));
+    const closed = new Promise<number>((r) => flood.once('close', (code) => r(code)));
+    for (let i = 0; i < 301; i++) flood.send(JSON.stringify({ t: 'ping', clientTime: i }));
+    assert.equal(await closed, 1008);
+  } finally {
+    await srv.close();
+  }
 });

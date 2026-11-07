@@ -40,6 +40,20 @@ const TYPES: Record<string, string> = {
 /** Wrong-PIN limit per address and regatta: PINs are short */
 const PIN_WINDOW_MS = 15 * 60_000;
 const PIN_MAX_FAILURES = 10;
+/** Open sockets per address (a club's wifi puts many phones behind one address) */
+const MAX_SOCKETS_PER_ADDRESS = 200;
+/** Messages per socket in 10 s; a phone sends a few, a busy relay a few dozen */
+const MAX_MESSAGES_PER_10S = 300;
+
+/**
+ * The client's address. Behind cPanel's web server the socket is local, so the address comes from
+ * X-Forwarded-For; only its last entry is trustworthy (added by our proxy): a client can write any
+ * entries before it.
+ */
+function clientAddress(req: http.IncomingMessage): string {
+  const forwarded = (req.headers['x-forwarded-for'] as string | undefined)?.split(',').map((s) => s.trim()).filter(Boolean);
+  return forwarded?.at(-1) || req.socket.remoteAddress || '?';
+}
 
 export async function startServer(opts: ServerOptions) {
   const now = opts.now ?? Date.now;
@@ -128,7 +142,7 @@ export async function startServer(opts: ServerOptions) {
         const hub = hubFor(pm[1]!.toUpperCase());
         if (!hub) return json(res, 404, { error: 'No regatta with that code.' });
         const r = store.getRegatta(hub.regattaId)!;
-        const address = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() || req.socket.remoteAddress || '?';
+        const address = clientAddress(req);
         const role = checkPin(address, r, String(req.headers['x-regatta-pin'] ?? ''));
         if (role === 'LOCKED') return json(res, 429, { error: 'Too many wrong PINs. Try again in 15 minutes.' });
         if (role === 'WRONG' || role === 'SPECTATOR') return json(res, 401, { error: 'That PIN is not right for this regatta.' });
@@ -163,8 +177,18 @@ export async function startServer(opts: ServerOptions) {
 
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 
+  const socketsPerAddress = new Map<string, number>();
+
   wss.on('connection', (ws, req) => {
-    const address = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() || req.socket.remoteAddress || '?';
+    const address = clientAddress(req);
+    const open = (socketsPerAddress.get(address) ?? 0) + 1;
+    if (open > MAX_SOCKETS_PER_ADDRESS) {
+      ws.close(1008, 'Too many connections from this address');
+      return;
+    }
+    socketsPerAddress.set(address, open);
+    let windowStart = now();
+    let messages = 0;
     let hub: RegattaHub | undefined;
     let role: Role = 'SPECTATOR';
     let unsubscribe: (() => void) | undefined;
@@ -173,7 +197,26 @@ export async function startServer(opts: ServerOptions) {
     };
 
     ws.on('message', (raw) => {
-      const msg = parseClientMessage(raw.toString());
+      // A device sending far more than any real one is closed
+      if (now() - windowStart > 10_000) {
+        windowStart = now();
+        messages = 0;
+      }
+      if (++messages > MAX_MESSAGES_PER_10S) {
+        ws.close(1008, 'Too many messages');
+        return;
+      }
+      try {
+        onMessage(raw.toString());
+      } catch (err) {
+        // Whatever went wrong with one message, the server and the other devices carry on
+        console.error('Message failed:', err);
+        send({ t: 'error', code: 'SERVER_ERROR', message: 'Something went wrong on the server with that message.' });
+      }
+    });
+
+    const onMessage = (text: string) => {
+      const msg = parseClientMessage(text);
       if (!msg) return send({ t: 'error', code: 'BAD_MESSAGE', message: 'Message not understood.' });
 
       if (msg.t === 'ping') return send({ t: 'pong', clientTime: msg.clientTime, serverTime: now() });
@@ -240,9 +283,14 @@ export async function startServer(opts: ServerOptions) {
         }
         return send({ t: 'result', id: msg.id, ...result } as ServerMessage);
       }
-    });
+    };
 
-    ws.on('close', () => unsubscribe?.());
+    ws.on('close', () => {
+      unsubscribe?.();
+      const left = (socketsPerAddress.get(address) ?? 1) - 1;
+      if (left > 0) socketsPerAddress.set(address, left);
+      else socketsPerAddress.delete(address);
+    });
   });
 
   await new Promise<void>((resolve) => server.listen(opts.port, resolve));

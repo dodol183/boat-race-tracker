@@ -196,7 +196,10 @@ export class RegattaHub {
     const bound = Object.values(this.state.boats).some((b) => b.trackerId === id);
     if (!bound) {
       if (fixes.length) {
+        this.unbound.delete(id);
         this.unbound.set(id, now);
+        // Kept small: a relay in a busy harbour, or someone sending made-up ids, can't fill memory
+        while (this.unbound.size > 200) this.unbound.delete(this.unbound.keys().next().value!);
         for (const s of this.subscribers) s.heard?.(this.heardList());
       }
       return { ok: true, accepted: 0, unbound: true };
