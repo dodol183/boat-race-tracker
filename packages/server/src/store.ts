@@ -1,7 +1,7 @@
 // SQLite: regattas, their events (the record), and the commands already answered.
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomInt } from 'node:crypto';
-import type { RegattaEvent } from '@brt/engine';
+import type { Fix, RegattaEvent } from '@brt/engine';
 
 export interface RegattaRow {
   id: string;
@@ -49,9 +49,22 @@ export function openStore(path: string) {
       result TEXT NOT NULL,
       PRIMARY KEY (regatta_id, command_id)
     );
+    -- Positions are kept apart from the events: there are many, and they decide nothing
+    CREATE TABLE IF NOT EXISTS fixes (
+      regatta_id TEXT NOT NULL REFERENCES regattas(id),
+      tracker_id TEXT NOT NULL,
+      fix_time INTEGER NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      speed_kt REAL,
+      heading_deg REAL,
+      received_at INTEGER NOT NULL,
+      PRIMARY KEY (regatta_id, tracker_id, fix_time)
+    ) WITHOUT ROWID;
   `);
 
   const insertEvent = db.prepare('INSERT INTO events (regatta_id, seq, at, command_id, body) VALUES (?, ?, ?, ?, ?)');
+  const insertFix = db.prepare('INSERT OR IGNORE INTO fixes (regatta_id, tracker_id, fix_time, lat, lng, speed_kt, heading_deg, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertCommand = db.prepare('INSERT INTO commands (regatta_id, command_id, received_at, result) VALUES (?, ?, ?, ?)');
 
   return {
@@ -95,6 +108,33 @@ export function openStore(path: string) {
         db.exec('ROLLBACK');
         throw err;
       }
+    },
+
+    /** Fixes from a tracker bound to a boat (others aren't kept: a relay hears strangers' radios too) */
+    addFixes(regattaId: string, trackerId: string, fixes: Fix[], receivedAt: number) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const f of fixes) insertFix.run(regattaId, trackerId, f.fixTime, f.lat, f.lng, f.speedKt ?? null, f.headingDeg ?? null, receivedAt);
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    },
+
+    /** Fixes taken since `since`, by tracker, oldest first */
+    fixesSince(regattaId: string, since: number): Map<string, Fix[]> {
+      const rows = db.prepare('SELECT tracker_id, fix_time, lat, lng, speed_kt, heading_deg FROM fixes WHERE regatta_id = ? AND fix_time >= ? ORDER BY tracker_id, fix_time').all(regattaId, since) as any[];
+      const out = new Map<string, Fix[]>();
+      for (const r of rows) {
+        const f: Fix = { lat: r.lat, lng: r.lng, fixTime: r.fix_time };
+        if (r.speed_kt !== null) f.speedKt = r.speed_kt;
+        if (r.heading_deg !== null) f.headingDeg = r.heading_deg;
+        const list = out.get(r.tracker_id);
+        if (list) list.push(f);
+        else out.set(r.tracker_id, [f]);
+      }
+      return out;
     },
 
     close() {

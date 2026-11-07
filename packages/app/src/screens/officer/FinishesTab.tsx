@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { phaseAt, type Race, type RegattaState } from '@brt/engine';
+import { phaseAt, type FinishSuggestion, type Race, type RegattaState } from '@brt/engine';
 import type { Pending, RegattaClient } from '../../lib/client.ts';
 import { useServerNow } from '../../lib/useRegatta.ts';
 import { clock, duration } from '../../lib/format.ts';
@@ -22,7 +22,7 @@ export function boatBySail(regatta: RegattaState, race: Race, typed: string): st
   return tail.length === 1 ? tail[0] : undefined;
 }
 
-export function FinishesTab({ client, regatta, pending }: { client: RegattaClient; regatta: RegattaState; pending: Pending[] }) {
+export function FinishesTab({ client, regatta, pending, suggested }: { client: RegattaClient; regatta: RegattaState; pending: Pending[]; suggested: FinishSuggestion[] }) {
   const now = useServerNow(client, 1000);
   const racing = Object.values(regatta.races)
     .filter((r) => phaseAt(r, now) === 'RACING')
@@ -31,14 +31,15 @@ export function FinishesTab({ client, regatta, pending }: { client: RegattaClien
   return (
     <div className="space-y-4">
       {racing.map((r) => (
-        <RaceFinishes key={r.id} race={r} regatta={regatta} client={client} pending={pending} now={now} />
+        <RaceFinishes key={r.id} race={r} regatta={regatta} client={client} pending={pending} now={now} suggested={suggested.filter((f) => f.raceId === r.id)} />
       ))}
     </div>
   );
 }
 
-function RaceFinishes({ race, regatta, client, pending, now }: { race: Race; regatta: RegattaState; client: RegattaClient; pending: Pending[]; now: number }) {
+function RaceFinishes({ race, regatta, client, pending, now, suggested }: { race: Race; regatta: RegattaState; client: RegattaClient; pending: Pending[]; now: number; suggested: FinishSuggestion[] }) {
   const [typed, setTyped] = useState('');
+  const [ignored, setIgnored] = useState<Set<string>>(new Set());
   const [miss, setMiss] = useState<string>();
   const cls = regatta.classes[race.classId];
   const title = `${cls?.name ?? 'Class'} · Race ${race.number}`;
@@ -69,6 +70,8 @@ function RaceFinishes({ race, regatta, client, pending, now }: { race: Race; reg
   const toCome = entries
     .filter((e) => !done.has(e.boatId) && (!e.penalty || e.penalty === 'OCS'))
     .sort((a, b) => sail(a.boatId).localeCompare(sail(b.boatId), undefined, { numeric: true }));
+
+  const gpsRows = suggested.filter((f) => !done.has(f.boatId) && !ignored.has(`${f.boatId}|${f.at}`));
 
   const finish = (boatId: string) => {
     void client.send({ type: 'recordFinish', raceId: race.id, boatId, at: client.serverNow(), source: 'TAP' });
@@ -102,6 +105,24 @@ function RaceFinishes({ race, regatta, client, pending, now }: { race: Race; reg
         <Button type="submit" tone="primary">Finish</Button>
       </form>
       {miss && <p role="alert" className="text-stop font-semibold">{miss}</p>}
+
+      {gpsRows.length > 0 && (
+        <div className="p-3 rounded-lg border border-accent space-y-2">
+          <h3 className="font-semibold">GPS says these boats crossed the finish line</h3>
+          <ul className="space-y-2">
+            {gpsRows.map((f) => (
+              <li key={f.boatId} className="flex flex-wrap items-center gap-2">
+                <span className="flex-1 min-w-0">
+                  <span className="font-semibold">{sail(f.boatId)}</span> at <span className="font-mono">{clock(f.at)}</span>
+                  <span className="block text-sm text-muted">Estimate between fixes {f.gapSec} s apart</span>
+                </span>
+                <Button tone="primary" onClick={() => void client.send({ type: 'recordFinish', raceId: race.id, boatId: f.boatId, at: f.at, source: 'GPS' })}>Record</Button>
+                <Button tone="quiet" onClick={() => setIgnored((s) => new Set(s).add(`${f.boatId}|${f.at}`))}>Ignore</Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {toCome.length > 0 ? (
         <div>

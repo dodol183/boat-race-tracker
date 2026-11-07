@@ -12,9 +12,9 @@ show what the server sends back. The plan, scope and phases are in [docs/PLAN.md
 
 | Package | What it is | Status |
 |---|---|---|
-| [`packages/engine`](packages/engine) | Racing rules as pure functions: start sequence, AP, general and individual recall, finishes, penalty codes, corrected time, race and series scoring (RRS Appendix A) | Phase 1: done, with tests |
+| [`packages/engine`](packages/engine) | Racing rules as pure functions: start sequence, AP, general and individual recall, finishes, penalty codes, corrected time, race and series scoring (RRS Appendix A) | Phase 1 done; GPS suggestions (4a), with tests |
 | [`packages/server`](packages/server) | Node server: runs the engine, stores every event in SQLite, keeps devices in step over WebSocket | Phase 2: done, with tests |
-| [`packages/app`](packages/app) | React app for the race office (start, finishes, results, setup) and for skippers and spectators (live, results). Works offline: commands wait on the device and go when the connection is back | Phase 3: website done, with tests. Android app (Capacitor) is phase 4 |
+| [`packages/app`](packages/app) | React app for the race office (start, finishes, map, results, setup) and for skippers (live, track, results) and spectators (live map, results). Works offline: commands and positions wait on the device and go when the connection is back | Phases 3 and 4a: website and tracking done, with tests. Bluetooth trackers and the Android app (Capacitor) are phase 4b |
 
 ## Develop
 
@@ -52,6 +52,20 @@ The PIN decides the role: race officer (commands), skipper or spectator (watch).
 - Events are numbered. A device that reconnects sends the last number it has and gets only what
   it missed; one that sees a gap sends `resync` for the whole state.
 - Events are stored before they are sent, so a restart restores the race exactly.
+
+### Tracking
+
+- A device sends `{"t":"positions","id":"…","trackerId":"…","fixes":[{"lat","lng","fixTime","speedKt","headingDeg"}]}`
+  (up to 500 fixes) and gets `positionsAck`. Tracker IDs are Meshtastic node IDs (`!a1b2c3d4`) or a
+  phone's own (`phone-…`). Skippers and the race office may send positions; spectators may not.
+- Positions are not events: they are kept in their own table and decide nothing. Only trackers
+  connected to a boat are kept or shown. A phone relaying a radio hears every radio nearby, so
+  the others are only listed to the race office as "heard", without where they are.
+- When the socket is down, the Android app's background service can
+  `POST /api/regattas/<code>/positions` with the skipper or race officer PIN in `x-regatta-pin`.
+- With the start line and first mark set (Setup, Course), the server tells the race office which
+  boats GPS places over the line at the gun, and when boats cross the finish line. These are
+  suggestions: the race office records finishes and raises X.
 
 ## How the engine works
 

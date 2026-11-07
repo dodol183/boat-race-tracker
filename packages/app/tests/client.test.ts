@@ -233,3 +233,50 @@ test('a connection that stops answering is given up at the next ping, and the ne
   h.client.networkLost();
   assert.equal(h.client.getSnapshot().status, 'offline');
 });
+
+test('positions wait on the device and go in batches, one at a time, each taken once the server says so', () => {
+  const storage = new Map<string, string>();
+  const h = harness(storage);
+  const r = regatta();
+  const fix = (t: number) => ({ lat: 1, lng: 1 + t / 1e6, fixTime: t });
+  // Shared while offline (the phone had no signal): kept, and kept through a reload
+  h.client.shareFixes('phone-abc123', Array.from({ length: 250 }, (_, i) => fix(i)));
+  assert.equal(h.client.getSnapshot().fixesWaiting, 250);
+  const again = harness(storage);
+  assert.equal(again.client.getSnapshot().fixesWaiting, 250);
+  assert.equal(again.client.phoneTrackerId, h.client.phoneTrackerId, 'the phone keeps its tracker id');
+  assert.match(h.client.phoneTrackerId, /^phone-[a-z0-9]{6,32}$/);
+
+  h.client.connect();
+  h.last().open();
+  h.last().push({ t: 'welcome', regattaId: 'ABC123', name: 'T', role: 'SKIPPER', seq: 2, serverTime: 0, state: r.state });
+  let sent = h.last().of('positions');
+  assert.deepEqual(sent.map((m) => m.fixes.length), [200], 'one batch at a time');
+  // More arrive meanwhile; they don't join the batch in flight
+  h.client.shareFixes('phone-abc123', [fix(300)]);
+  h.last().push({ t: 'positionsAck', id: sent[0].id, accepted: 200 });
+  sent = h.last().of('positions');
+  assert.deepEqual(sent[1].fixes.map((f: any) => f.fixTime), [...Array.from({ length: 50 }, (_, i) => 200 + i)]);
+  assert.equal(h.client.getSnapshot().fixesWaiting, 51);
+
+  // A lost connection: the unanswered batch goes again after the reconnect
+  h.last().drop();
+  h.fireReconnect();
+  h.last().open();
+  h.last().push({ t: 'welcome', regattaId: 'ABC123', name: 'T', role: 'SKIPPER', seq: 2, serverTime: 0, events: [] });
+  const resent = h.last().of('positions')[0];
+  assert.equal(resent.fixes.length, 50);
+  h.last().push({ t: 'positionsAck', id: resent.id, accepted: 50 });
+  const tail = h.last().of('positions')[1];
+  assert.deepEqual(tail.fixes.map((f: any) => f.fixTime), [300]);
+  h.last().push({ t: 'positionsAck', id: tail.id, accepted: 0, unbound: true });
+  const snap = h.client.getSnapshot();
+  assert.equal(snap.fixesWaiting, 0);
+  assert.match(snap.shareProblem!, /not connected to a boat/);
+  assert.equal(storage.has('brt:ABC123:fixes'), false);
+
+  // Tracks from the server: a full set replaces, updates add
+  h.last().push({ t: 'positions', full: true, trackers: [{ trackerId: '!a1b2c3d4', fixes: [fix(h.clock.now - 1000)] }] });
+  h.last().push({ t: 'positions', trackers: [{ trackerId: '!a1b2c3d4', fixes: [fix(h.clock.now)] }] });
+  assert.equal(h.client.getSnapshot().tracks['!a1b2c3d4']!.length, 2);
+});

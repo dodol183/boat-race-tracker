@@ -6,7 +6,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RegattaHub, type Role } from './hub.ts';
 import { openStore, type Store } from './store.ts';
-import { parseClientMessage, type ServerMessage } from './protocol.ts';
+import { MAX_FIXES_PER_MESSAGE, parseClientMessage, type ServerMessage } from './protocol.ts';
 
 export interface ServerOptions {
   port: number;
@@ -51,6 +51,19 @@ export async function startServer(opts: ServerOptions) {
       hubs.set(id, hub);
     }
     return hub;
+  };
+
+  /** The role a PIN gives (none: spectator), with a limit on wrong PINs per address and regatta */
+  const checkPin = (address: string, r: { id: string; officerPin: string; skipperPin: string }, pin: string): Role | 'WRONG' | 'LOCKED' => {
+    if (!pin) return 'SPECTATOR';
+    const key = `${address}|${r.id}`;
+    const f = pinFailures.get(key);
+    if (f && now() - f.first < PIN_WINDOW_MS && f.count >= PIN_MAX_FAILURES) return 'LOCKED';
+    if (pin === r.officerPin) return 'OFFICER';
+    if (pin === r.skipperPin) return 'SKIPPER';
+    const fresh = !f || now() - f.first >= PIN_WINDOW_MS;
+    pinFailures.set(key, { count: fresh ? 1 : f!.count + 1, first: fresh ? now() : f!.first });
+    return 'WRONG';
   };
 
   const timer = setInterval(() => {
@@ -102,6 +115,22 @@ export async function startServer(opts: ServerOptions) {
         return json(res, 201, store.createRegatta(name, now()));
       }
 
+      const pm = url.pathname.match(/^\/api\/regattas\/([A-Za-z0-9]+)\/positions$/);
+      if (req.method === 'POST' && pm) {
+        const hub = hubFor(pm[1]!.toUpperCase());
+        if (!hub) return json(res, 404, { error: 'No regatta with that code.' });
+        const r = store.getRegatta(hub.regattaId)!;
+        const address = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() || req.socket.remoteAddress || '?';
+        const role = checkPin(address, r, String(req.headers['x-regatta-pin'] ?? ''));
+        if (role === 'LOCKED') return json(res, 429, { error: 'Too many wrong PINs. Try again in 15 minutes.' });
+        if (role === 'WRONG' || role === 'SPECTATOR') return json(res, 401, { error: 'That PIN is not right for this regatta.' });
+        const body = await readJson(req);
+        if (typeof body.trackerId !== 'string' || !Array.isArray(body.fixes) || body.fixes.length > MAX_FIXES_PER_MESSAGE) return json(res, 400, { error: 'Send trackerId and up to 500 fixes.' });
+        hub.tick();
+        const out = hub.acceptPositions(role, body.trackerId, body.fixes);
+        return out.ok ? json(res, 200, { accepted: out.accepted, ...(out.unbound ? { unbound: true } : {}) }) : json(res, 400, { error: out.error.message, code: out.error.code });
+      }
+
       const m = url.pathname.match(/^\/api\/regattas\/([A-Za-z0-9]+)$/);
       if (req.method === 'GET' && m) {
         const hub = hubFor(m[1]!.toUpperCase());
@@ -145,20 +174,10 @@ export async function startServer(opts: ServerOptions) {
         const target = hubFor(msg.regattaId);
         if (!target) return send({ t: 'error', code: 'NO_SUCH_REGATTA', message: 'No regatta with that code.' });
         const r = store.getRegatta(target.regattaId)!;
-        let nextRole: Role = 'SPECTATOR';
-        if (msg.pin) {
-          const key = `${address}|${r.id}`;
-          const f = pinFailures.get(key);
-          const locked = f && now() - f.first < PIN_WINDOW_MS && f.count >= PIN_MAX_FAILURES;
-          if (locked) return send({ t: 'error', code: 'TOO_MANY_PIN_TRIES', message: 'Too many wrong PINs. Try again in 15 minutes.' });
-          if (msg.pin === r.officerPin) nextRole = 'OFFICER';
-          else if (msg.pin === r.skipperPin) nextRole = 'SKIPPER';
-          else {
-            const fresh = !f || now() - f.first >= PIN_WINDOW_MS;
-            pinFailures.set(key, { count: fresh ? 1 : f!.count + 1, first: fresh ? now() : f!.first });
-            return send({ t: 'error', code: 'WRONG_PIN', message: 'That PIN is not right for this regatta.' });
-          }
-        }
+        const checked = checkPin(address, r, msg.pin ?? '');
+        if (checked === 'LOCKED') return send({ t: 'error', code: 'TOO_MANY_PIN_TRIES', message: 'Too many wrong PINs. Try again in 15 minutes.' });
+        if (checked === 'WRONG') return send({ t: 'error', code: 'WRONG_PIN', message: 'That PIN is not right for this regatta.' });
+        const nextRole: Role = checked;
         unsubscribe?.();
         hub = target;
         role = nextRole;
@@ -175,7 +194,19 @@ export async function startServer(opts: ServerOptions) {
           serverTime: now(),
           ...(catchUp ? { events: hub.eventsSince(msg.lastSeq!) } : { state: hub.state }),
         });
-        unsubscribe = hub.subscribe({ events: (events) => send({ t: 'events', events }) });
+        const officer = role === 'OFFICER';
+        unsubscribe = hub.subscribe({
+          events: (events) => send({ t: 'events', events }),
+          positions: (u) => send({ t: 'positions', ...u }),
+          ...(officer
+            ? { suggestions: (sg) => send({ t: 'suggestions', ...sg }), heard: (trackers) => send({ t: 'heard', trackers }) }
+            : {}),
+        });
+        send({ t: 'positions', ...hub.positionsSnapshot() });
+        if (officer) {
+          send({ t: 'suggestions', ...hub.suggestions() });
+          send({ t: 'heard', trackers: hub.heardList() });
+        }
         return;
       }
 
@@ -184,6 +215,11 @@ export async function startServer(opts: ServerOptions) {
       if (msg.t === 'resync') {
         const r = store.getRegatta(hub.regattaId)!;
         return send({ t: 'welcome', regattaId: r.id, name: r.name, role, ...(role === 'OFFICER' ? { skipperPin: r.skipperPin } : {}), seq: hub.seq, serverTime: now(), state: hub.state });
+      }
+
+      if (msg.t === 'positions') {
+        const r = hub.acceptPositions(role, msg.trackerId, msg.fixes);
+        return send(r.ok ? { t: 'positionsAck', id: msg.id, accepted: r.accepted, ...(r.unbound ? { unbound: true } : {}) } : { t: 'positionsAck', id: msg.id, accepted: 0, error: r.error });
       }
 
       if (msg.t === 'command') {

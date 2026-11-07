@@ -1,7 +1,7 @@
 // A device's connection to one regatta: keeps a copy of the race from the server's events, queues
 // commands (kept on the device until the server answers), and estimates the server's clock.
 // No React and no DOM here, so it can be tested in Node and reused by the Android app.
-import { apply, type Command, type RegattaState, type RegattaEvent } from '@brt/engine';
+import { apply, mergeTrail, type Command, type FinishSuggestion, type Fix, type OverSuggestion, type RegattaState, type RegattaEvent } from '@brt/engine';
 
 export type Role = 'OFFICER' | 'SKIPPER' | 'SPECTATOR';
 
@@ -17,7 +17,11 @@ type ServerMessage =
   | { t: 'result'; id: string; ok: true; seq: number; duplicate?: boolean }
   | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean }
   | { t: 'pong'; clientTime: number; serverTime: number }
-  | { t: 'error'; code: string; message: string };
+  | { t: 'error'; code: string; message: string }
+  | { t: 'positions'; full?: boolean; trackers: { trackerId: string; fixes: Fix[] }[] }
+  | { t: 'positionsAck'; id: string; accepted: number; unbound?: boolean; error?: { code: string; message: string } }
+  | { t: 'suggestions'; over: OverSuggestion[]; finishes: FinishSuggestion[] }
+  | { t: 'heard'; trackers: { trackerId: string; at: number }[] };
 
 /** The parts of a WebSocket this uses (the browser's, or a test double) */
 export interface SocketLike {
@@ -57,6 +61,21 @@ export interface ClientSnapshot {
   pending: Pending[];
   /** The last refusal or connection problem, in words for the person */
   notice: { kind: 'refused' | 'failed'; message: string; at: number } | null;
+  /** Recent track of each tracker, oldest first (boats name their tracker) */
+  tracks: Record<string, Fix[]>;
+  /** What GPS suggests (race office only) */
+  suggestions: { over: OverSuggestion[]; finishes: FinishSuggestion[] };
+  /** Trackers heard that no boat has (race office only) */
+  heard: { trackerId: string; at: number }[];
+  /** Positions from this device not yet taken by the server */
+  fixesWaiting: number;
+  /** Why the server last turned this device's positions away, if it did */
+  shareProblem: string | null;
+}
+
+interface QueuedFixes {
+  trackerId: string;
+  fixes: Fix[];
 }
 
 export type CommandOutcome = { ok: true } | { ok: false; message: string; code: string };
@@ -74,6 +93,11 @@ export interface ClientOptions {
 
 const OPEN = 1;
 const PING_MS = 15_000;
+/** Track kept on the device for the map */
+const TRACK_KEEP_MS = 30 * 60_000;
+/** Positions kept while offline: about 7 hours at one every 5 s */
+const FIX_QUEUE_MAX = 5000;
+const FIXES_PER_MESSAGE = 200;
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
 export class RegattaClient {
@@ -91,6 +115,9 @@ export class RegattaClient {
   private bestRoundTrip = Infinity;
   private waiting = new Map<string, (o: CommandOutcome) => void>();
   private counter = 0;
+  private fixQueue: QueuedFixes[] = [];
+  /** The batch the server has but hasn't answered */
+  private fixesInFlight: { id: string; count: number } | null = null;
   private readonly deviceId: string;
   private readonly now: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -111,7 +138,19 @@ export class RegattaClient {
       seq: saved?.seq ?? 0,
       pending: saved?.pending ?? [],
       notice: null,
+      tracks: {},
+      suggestions: { over: [], finishes: [] },
+      heard: [],
+      fixesWaiting: 0,
+      shareProblem: null,
     };
+    this.fixQueue = this.loadFixes();
+    this.snap.fixesWaiting = this.countFixes();
+  }
+
+  /** This device's id as a tracker, when it shares its own GPS */
+  get phoneTrackerId(): string {
+    return `phone-${this.deviceId}`;
   }
 
   // ------------------------------------------------------------------ for React (useSyncExternalStore)
@@ -159,6 +198,31 @@ export class RegattaClient {
     const done = new Promise<CommandOutcome>((resolve) => this.waiting.set(id, resolve));
     if (this.snap.status === 'live') this.transmit(item);
     return done;
+  }
+
+  /**
+   * Positions from a tracker this device reads (its own GPS, or a radio it relays). Kept on the
+   * device until the server has them, so a skipper out of signal loses nothing.
+   */
+  shareFixes(trackerId: string, fixes: Fix[]) {
+    if (fixes.length === 0) return;
+    const last = this.fixQueue.at(-1);
+    if (last && last.trackerId === trackerId && last !== this.inFlightGroup()) last.fixes.push(...fixes);
+    else this.fixQueue.push({ trackerId, fixes: [...fixes] });
+    // Too many: the oldest go first
+    // (never from a batch the server has but hasn't answered)
+    let extra = this.countFixes() - FIX_QUEUE_MAX;
+    const first = this.fixesInFlight ? 1 : 0;
+    while (extra > 0 && this.fixQueue.length > first) {
+      const g = this.fixQueue[first]!;
+      const n = Math.min(extra, g.fixes.length);
+      g.fixes.splice(0, n);
+      extra -= n;
+      if (g.fixes.length === 0) this.fixQueue.splice(first, 1);
+    }
+    this.saveFixes();
+    this.update({ fixesWaiting: this.countFixes() });
+    this.flushFixes();
   }
 
   dismissNotice() {
@@ -221,6 +285,7 @@ export class RegattaClient {
     // A socket that went quiet may take minutes to report closing; don't wait for it
     if (ws.readyState < 2) ws.close();
     if (this.pingTimer) this.clearTimer(this.pingTimer);
+    this.fixesInFlight = null;
     if (this.stopped || this.snap.status === 'failed') return;
     this.update({ status: 'offline' });
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)]!;
@@ -253,6 +318,8 @@ export class RegattaClient {
         this.save();
         // Whatever was queued while offline goes now, in order
         for (const item of this.snap.pending) this.transmit(item);
+        this.fixesInFlight = null;
+        this.flushFixes();
         return;
       }
       case 'events': {
@@ -284,6 +351,40 @@ export class RegattaClient {
         this.noteServerTime(m.serverTime, roundTrip, m.clientTime);
         return;
       }
+      case 'positions': {
+        const tracks: Record<string, Fix[]> = m.full ? {} : { ...this.snap.tracks };
+        const cutoff = this.serverNow() - TRACK_KEEP_MS;
+        for (const t of m.trackers) {
+          const merged = mergeTrail(tracks[t.trackerId] ?? [], t.fixes);
+          // Always keep the newest, however old, so a boat still shows where it was last seen
+          const recent = merged.filter((f, i) => f.fixTime >= cutoff || i === merged.length - 1);
+          tracks[t.trackerId] = recent;
+        }
+        this.update({ tracks });
+        return;
+      }
+      case 'positionsAck': {
+        if (this.fixesInFlight?.id !== m.id) return;
+        const { count } = this.fixesInFlight;
+        this.fixesInFlight = null;
+        const g = this.fixQueue[0];
+        if (g) {
+          g.fixes.splice(0, count);
+          if (g.fixes.length === 0) this.fixQueue.shift();
+        }
+        this.saveFixes();
+        // Turned away (spectator, unknown tracker): those positions are dropped, and the reason shown
+        const shareProblem = m.error ? m.error.message : m.unbound ? 'This tracker is not connected to a boat, so its positions are not kept.' : null;
+        this.update({ fixesWaiting: this.countFixes(), shareProblem });
+        this.flushFixes();
+        return;
+      }
+      case 'suggestions':
+        this.update({ suggestions: { over: m.over, finishes: m.finishes } });
+        return;
+      case 'heard':
+        this.update({ heard: m.trackers });
+        return;
       case 'error': {
         // A wrong code or PIN won't get better by retrying
         if (['NO_SUCH_REGATTA', 'WRONG_PIN', 'TOO_MANY_PIN_TRIES'].includes(m.code)) {
@@ -294,6 +395,24 @@ export class RegattaClient {
         return;
       }
     }
+  }
+
+  private flushFixes() {
+    if (this.fixesInFlight || this.snap.status !== 'live' || !this.ws || this.ws.readyState !== OPEN) return;
+    const g = this.fixQueue[0];
+    if (!g) return;
+    const fixes = g.fixes.slice(0, FIXES_PER_MESSAGE);
+    const id = `${this.deviceId}-f${this.now().toString(36)}-${(this.counter++).toString(36)}`;
+    this.fixesInFlight = { id, count: fixes.length };
+    this.ws.send(JSON.stringify({ t: 'positions', id, trackerId: g.trackerId, fixes }));
+  }
+
+  private inFlightGroup(): QueuedFixes | undefined {
+    return this.fixesInFlight ? this.fixQueue[0] : undefined;
+  }
+
+  private countFixes(): number {
+    return this.fixQueue.reduce((n, g) => n + g.fixes.length, 0);
   }
 
   private resync() {
@@ -352,6 +471,25 @@ export class RegattaClient {
       this.opts.storage?.setItem(this.key(), JSON.stringify({ name: this.snap.name, regatta: this.snap.regatta, seq: this.snap.seq, pending: this.snap.pending }));
     } catch {
       // Full or blocked storage: the queue still lives in memory
+    }
+  }
+
+  private loadFixes(): QueuedFixes[] {
+    try {
+      const raw = this.opts.storage?.getItem(`${this.key()}:fixes`);
+      const q = raw ? JSON.parse(raw) : [];
+      return Array.isArray(q) ? q.filter((g) => g && typeof g.trackerId === 'string' && Array.isArray(g.fixes)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveFixes() {
+    try {
+      if (this.fixQueue.length) this.opts.storage?.setItem(`${this.key()}:fixes`, JSON.stringify(this.fixQueue));
+      else this.opts.storage?.removeItem(`${this.key()}:fixes`);
+    } catch {
+      // Full storage: they still go from memory
     }
   }
 

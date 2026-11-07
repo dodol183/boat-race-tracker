@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   activeRace, nextSignal, phaseAt, sequenceSignals, xFlagState, X_FLAG_LIMIT_MS,
-  type Race, type RaceClass, type RegattaState,
+  type OverSuggestion, type Race, type RaceClass, type RegattaState,
 } from '@brt/engine';
 import type { RegattaClient } from '../../lib/client.ts';
 import { useServerNow } from '../../lib/useRegatta.ts';
@@ -11,7 +11,7 @@ import { Button, Card, ConfirmButton, Pill } from '../../ui/kit.tsx';
 
 const SIGNAL_LABEL = { WARNING: 'Warning signal', PREPARATORY: 'Preparatory signal', ONE_MINUTE: 'One minute', START: 'Start' } as const;
 
-export function StartTab({ client, regatta }: { client: RegattaClient; regatta: RegattaState }) {
+export function StartTab({ client, regatta, over }: { client: RegattaClient; regatta: RegattaState; over: OverSuggestion[] }) {
   const now = useServerNow(client);
   const [sound, setSound] = useState(false);
   const classes = Object.values(regatta.classes).sort((a, b) => a.name.localeCompare(b.name));
@@ -24,13 +24,13 @@ export function StartTab({ client, regatta }: { client: RegattaClient; regatta: 
         </Button>
       </div>
       {classes.map((c) => (
-        <ClassCard key={c.id} cls={c} regatta={regatta} client={client} now={now} sound={sound} />
+        <ClassCard key={c.id} cls={c} regatta={regatta} client={client} now={now} sound={sound} over={over} />
       ))}
     </div>
   );
 }
 
-function ClassCard({ cls, regatta, client, now, sound }: { cls: RaceClass; regatta: RegattaState; client: RegattaClient; now: number; sound: boolean }) {
+function ClassCard({ cls, regatta, client, now, sound, over }: { cls: RaceClass; regatta: RegattaState; client: RegattaClient; now: number; sound: boolean; over: OverSuggestion[] }) {
   const race = activeRace(regatta, cls.id);
   const boats = Object.values(regatta.boats).filter((b) => b.classId === cls.id);
   useSignalHorn(race, now, sound);
@@ -82,7 +82,7 @@ function ClassCard({ cls, regatta, client, now, sound }: { cls: RaceClass; regat
     <Card title={title} actions={<Pill tone="go">Racing</Pill>}>
       <p className="text-4xl font-bold font-mono">{duration((now - startedAt) / 1000)}</p>
       <p className="text-muted">{finished} of {entries.length} finished.</p>
-      <XFlag race={race} regatta={regatta} client={client} now={now} />
+      <XFlag race={race} regatta={regatta} client={client} now={now} over={over.filter((o) => o.raceId === race.id)} />
       <div className="flex flex-wrap gap-2 pt-2 border-t border-line">
         {finished === 0 && (
           <ConfirmButton label="General recall" confirm="Signal general recall" onConfirm={() => client.send({ type: 'generalRecall', raceId: race.id })} />
@@ -107,7 +107,7 @@ function SignalList({ race, now }: { race: Race; now: number }) {
 }
 
 /** Individual recall: choose the boats, raise X; then mark them back and lower it */
-function XFlag({ race, regatta, client, now }: { race: Race; regatta: RegattaState; client: RegattaClient; now: number }) {
+function XFlag({ race, regatta, client, now, over }: { race: Race; regatta: RegattaState; client: RegattaClient; now: number; over: OverSuggestion[] }) {
   const [choosing, setChoosing] = useState(false);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const x = xFlagState(race, now);
@@ -137,11 +137,25 @@ function XFlag({ race, regatta, client, now }: { race: Race; regatta: RegattaSta
   }
   if (race.xFlag || startedAt === undefined || now - startedAt >= X_FLAG_LIMIT_MS) return null;
 
-  if (!choosing) return <Button onClick={() => { setChosen(new Set()); setChoosing(true); }}>X flag: individual recall</Button>;
+  const gpsOver = over.length > 0 && (
+    <p className="text-warn font-semibold">
+      GPS: {over.map((o) => `${sail(o.boatId)} (${o.metres} m)`).join(', ')} looked over the line at the gun. Check before raising X.
+    </p>
+  );
+  if (!choosing) {
+    return (
+      <div className="space-y-2">
+        {gpsOver}
+        {/* GPS only suggests: the boats start ticked, the race office decides */}
+        <Button onClick={() => { setChosen(new Set(over.map((o) => o.boatId))); setChoosing(true); }}>X flag: individual recall</Button>
+      </div>
+    );
+  }
   const ids = Object.keys(race.entries).sort((a, b) => sail(a).localeCompare(sail(b), undefined, { numeric: true }));
   return (
     <fieldset className="p-3 rounded-lg border border-line space-y-2">
       <legend className="font-bold px-1">Boats over the line</legend>
+      {gpsOver}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {ids.map((id) => (
           <label key={id} className="min-h-11 flex items-center gap-2 px-3 rounded-lg border border-line has-[:checked]:border-stop">

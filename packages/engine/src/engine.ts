@@ -2,7 +2,9 @@
 // events it causes (or why it can't be done); `apply` folds one event into the state; `advance`
 // returns the events that time alone causes (the start gun). The server keeps the events, so the
 // state can always be rebuilt by applying them in order.
-import type { Boat, Entry, PenaltyCode, Race, RaceClass, RatingSystem, RegattaState } from './types.ts';
+import { emptyRegatta, type Boat, type Course, type Entry, type PenaltyCode, type Race, type RaceClass, type RatingSystem, type RegattaOptions, type RegattaState } from './types.ts';
+import { distanceM, isPoint, startLineOffset } from './geo.ts';
+import { isPhoneTracker, trackerId } from './tracking.ts';
 
 export const MINUTE = 60_000;
 /** RRS 29.1: X comes down once every recalled boat has returned, and no later than 4 minutes after the start */
@@ -21,6 +23,12 @@ export type Command =
   | { type: 'saveBoat'; boat: Omit<Boat, 'trackerId'> }
   | { type: 'removeBoat'; boatId: string }
   | { type: 'bindTracker'; boatId: string; trackerId: string | null }
+  /** A skipper connecting their phone or tracker to a boat with none (when the race office allows it) */
+  | { type: 'claimTracker'; boatId: string; trackerId: string }
+  /** A skipper disconnecting their own phone; knowing its id is the proof */
+  | { type: 'releaseTracker'; boatId: string; trackerId: string }
+  | { type: 'setCourse'; course: Course }
+  | { type: 'setOptions'; options: Partial<RegattaOptions> }
   | { type: 'startSequence'; classId: string }
   | { type: 'postpone'; raceId: string }
   | { type: 'resumeSequence'; raceId: string }
@@ -43,6 +51,8 @@ export type RegattaEvent =
   | { type: 'boatSaved'; boat: Omit<Boat, 'trackerId'> }
   | { type: 'boatRemoved'; boatId: string }
   | { type: 'trackerBound'; boatId: string; trackerId: string | null }
+  | { type: 'courseSet'; course: Course }
+  | { type: 'optionsSet'; options: RegattaOptions }
   | { type: 'sequenceStarted'; raceId: string; classId: string; number: number; warningAt: number; startAt: number }
   | { type: 'postponed'; raceId: string; at: number }
   | { type: 'sequenceResumed'; raceId: string; warningAt: number; startAt: number }
@@ -159,13 +169,67 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       const b = state.boats[cmd.boatId];
       if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
       if (cmd.trackerId !== null) {
-        const id = cmd.trackerId.trim();
-        if (!id) return refuse('BAD_TRACKER', 'Choose a tracker.');
+        const id = trackerId(cmd.trackerId);
+        if (!id) return refuse('BAD_TRACKER', 'A tracker ID is a Meshtastic node ID such as !a1b2c3d4.');
         const other = Object.values(state.boats).find((o) => o.id !== b.id && o.trackerId === id);
         if (other) return refuse('TRACKER_IN_USE', `That tracker is on ${other.sailNumber}. Unbind it there first.`);
         return accept({ type: 'trackerBound', boatId: b.id, trackerId: id });
       }
       return accept({ type: 'trackerBound', boatId: b.id, trackerId: null });
+    }
+
+    case 'claimTracker': {
+      if (!state.options?.skippersConnectTrackers) return refuse('CLAIM_OFF', 'The race office has not allowed skippers to connect trackers. Ask them to connect yours.');
+      const b = state.boats[cmd.boatId];
+      if (!b) return refuse('NO_SUCH_BOAT', 'That boat is no longer in the fleet.');
+      const id = trackerId(cmd.trackerId);
+      if (!id) return refuse('BAD_TRACKER', 'That is not a tracker this app knows.');
+      // Asking again for the connection already there is fine
+      if (b.trackerId === id) return accept();
+      // A skipper can't replace another tracker, so can't take another boat off the map
+      if (b.trackerId) return refuse('BOAT_HAS_TRACKER', `${b.sailNumber} already has a tracker. Ask the race office to change it.`);
+      const other = Object.values(state.boats).find((o) => o.trackerId === id);
+      if (other) return refuse('TRACKER_IN_USE', `This tracker is on ${other.sailNumber}. Ask the race office to move it.`);
+      return accept({ type: 'trackerBound', boatId: b.id, trackerId: id });
+    }
+
+    case 'releaseTracker': {
+      const b = state.boats[cmd.boatId];
+      const id = trackerId(cmd.trackerId);
+      if (!b || !id || b.trackerId !== id) return refuse('NOT_YOUR_TRACKER', 'This phone is not connected to that boat.');
+      // Only a phone: a radio's id is printed on it, so knowing it proves nothing
+      if (!isPhoneTracker(id)) return refuse('ASK_RACE_OFFICE', 'Ask the race office to disconnect a radio tracker.');
+      return accept({ type: 'trackerBound', boatId: b.id, trackerId: null });
+    }
+
+    case 'setCourse': {
+      const course: Course = {};
+      const keys = ['startPin', 'startCommittee', 'firstMark', 'finishPin', 'finishCommittee'] as const;
+      for (const k of keys) {
+        const p = cmd.course?.[k];
+        if (p === undefined || p === null) continue;
+        if (!isPoint(p)) return refuse('BAD_POSITION', 'A mark has a position that is not on the map.');
+        course[k] = { lat: p.lat, lng: p.lng };
+      }
+      for (const [a, b, what] of [['startPin', 'startCommittee', 'start'], ['finishPin', 'finishCommittee', 'finish']] as const) {
+        const pa = course[a];
+        const pb = course[b];
+        if (!pa !== !pb) return refuse('HALF_LINE', `The ${what} line needs both ends.`);
+        if (pa && pb) {
+          const len = distanceM(pa, pb);
+          if (len < 5 || len > 3000) return refuse('BAD_LINE', `The ${what} line is ${Math.round(len)} m long; check its ends.`);
+        }
+      }
+      if (course.firstMark && course.startPin && course.startCommittee && startLineOffset(course.firstMark, course.startPin, course.startCommittee, course.firstMark) === null) {
+        return refuse('MARK_ON_LINE', 'The first mark is on the start line; move it up the course.');
+      }
+      return accept({ type: 'courseSet', course });
+    }
+
+    case 'setOptions': {
+      const v = cmd.options?.skippersConnectTrackers;
+      if (v !== undefined && typeof v !== 'boolean') return refuse('BAD_OPTION', 'That setting could not be read.');
+      return accept({ type: 'optionsSet', options: { ...emptyRegatta().options, ...state.options, ...(v !== undefined ? { skippersConnectTrackers: v } : {}) } });
     }
 
     case 'startSequence': {
@@ -353,6 +417,10 @@ function applyEvent(state: RegattaState, ev: RegattaEvent): RegattaState {
       const { trackerId: _old, ...rest } = b;
       return { ...state, boats: { ...state.boats, [b.id]: ev.trackerId ? { ...rest, trackerId: ev.trackerId } : rest } };
     }
+    case 'courseSet':
+      return { ...state, course: ev.course };
+    case 'optionsSet':
+      return { ...state, options: ev.options };
     case 'sequenceStarted':
       return {
         ...state,

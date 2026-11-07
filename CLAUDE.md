@@ -27,6 +27,12 @@ view. Anything else waits.
   `client.send(command)`; they never change state themselves. Use `client.serverNow()` for any
   time shown or sent (finish taps carry `at`).
 
+- **Tracking:** positions are not events. They go through `RegattaHub.acceptPositions`, are kept
+  in the `fixes` table, and never change the race. GPS only *suggests* (OCS at the gun, finish
+  crossings; `gpsSuggestions` in the engine, sent to the race office only); a race office command
+  is the record. Never keep or show positions of a tracker that no boat has: a relay hears
+  strangers' radios. Tests use made-up positions near 1°N 1°E; never commit real coordinates.
+
 ## Commands
 
 - `npm install`, `npm test`, `npm run typecheck`, `npm run build` (Node 22.13+).

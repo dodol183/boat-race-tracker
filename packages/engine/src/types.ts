@@ -66,12 +66,37 @@ export interface Race {
   entries: Record<string, Entry>;
 }
 
+export interface LatLng {
+  lat: number;
+  lng: number;
+}
+
+/**
+ * Where the lines are, for GPS suggestions and the map. One course for the regatta in version 1.
+ * The finish line is often the start line: then the finish points are left out.
+ */
+export interface Course {
+  startPin?: LatLng;
+  startCommittee?: LatLng;
+  /** The first mark: it tells which side of the start line is the course side */
+  firstMark?: LatLng;
+  finishPin?: LatLng;
+  finishCommittee?: LatLng;
+}
+
+export interface RegattaOptions {
+  /** Skippers may connect their own phone or tracker to a boat that has none */
+  skippersConnectTrackers: boolean;
+}
+
 export interface RegattaState {
   classes: Record<string, RaceClass>;
   boats: Record<string, Boat>;
   races: Record<string, Race>;
+  course: Course;
+  options: RegattaOptions;
   /** Number of events applied; the server's sequence number */
   version: number;
 }
 
-export const emptyRegatta = (): RegattaState => ({ classes: {}, boats: {}, races: {}, version: 0 });
+export const emptyRegatta = (): RegattaState => ({ classes: {}, boats: {}, races: {}, course: {}, options: { skippersConnectTrackers: false }, version: 0 });

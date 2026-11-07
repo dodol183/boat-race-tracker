@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRegatta } from '../lib/useRegatta.ts';
 import type { Joined } from './Join.tsx';
 import { Button, Pill } from '../ui/kit.tsx';
@@ -7,14 +7,23 @@ import { FinishesTab } from './officer/FinishesTab.tsx';
 import { ResultsTab } from './ResultsTab.tsx';
 import { SetupTab } from './officer/SetupTab.tsx';
 import { LiveTab } from './LiveTab.tsx';
+import { TrackTab } from './TrackTab.tsx';
+import { MapTab } from './officer/MapTab.tsx';
+import { PhoneGps } from '../lib/phoneGps.ts';
 
-type Tab = 'start' | 'finishes' | 'results' | 'setup' | 'live';
+type Tab = 'start' | 'finishes' | 'map' | 'results' | 'setup' | 'live' | 'track';
 
 const OFFICER_TABS: { id: Tab; label: string }[] = [
   { id: 'start', label: 'Start' },
   { id: 'finishes', label: 'Finishes' },
+  { id: 'map', label: 'Map' },
   { id: 'results', label: 'Results' },
   { id: 'setup', label: 'Setup' },
+];
+const SKIPPER_TABS: { id: Tab; label: string }[] = [
+  { id: 'live', label: 'Live' },
+  { id: 'track', label: 'Track' },
+  { id: 'results', label: 'Results' },
 ];
 const WATCH_TABS: { id: Tab; label: string }[] = [
   { id: 'live', label: 'Live' },
@@ -24,7 +33,10 @@ const WATCH_TABS: { id: Tab; label: string }[] = [
 export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (why?: string) => void }) {
   const { client, snap } = useRegatta(joined.regattaId, joined.pin);
   const officer = snap.role === 'OFFICER';
-  const tabs = officer ? OFFICER_TABS : WATCH_TABS;
+  const tabs = officer ? OFFICER_TABS : snap.role === 'SKIPPER' ? SKIPPER_TABS : WATCH_TABS;
+  // One GPS per joined regatta, so sharing carries on while other tabs are open
+  const gps = useMemo(() => new PhoneGps(client), [client]);
+  useEffect(() => () => gps.stop(), [gps]);
   const [tab, setTab] = useState<Tab>(officer ? 'start' : 'live');
 
   // A wrong code or PIN: back to the join screen, saying why
@@ -34,7 +46,7 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
   // The role arrives with welcome: show that role's first tab
   useEffect(() => {
     if (!tabs.some((t) => t.id === tab)) setTab(tabs[0]!.id);
-  }, [officer]);
+  }, [snap.role]);
 
   const status = {
     connecting: <Pill tone="muted">Connecting…</Pill>,
@@ -81,7 +93,7 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
             role="tab"
             aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
-            className={`min-h-11 px-4 rounded-full font-semibold shrink-0 ${tab === t.id ? 'bg-accent text-accent-ink' : 'bg-surface border border-line'}`}
+            className={`min-h-11 px-2.5 text-sm sm:px-4 sm:text-base rounded-full font-semibold shrink-0 ${tab === t.id ? 'bg-accent text-accent-ink' : 'bg-surface border border-line'}`}
           >
             {t.label}
           </button>
@@ -92,15 +104,19 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
         {!snap.regatta ? (
           <p className="text-muted">Loading the regatta…</p>
         ) : tab === 'start' ? (
-          <StartTab client={client} regatta={snap.regatta} />
+          <StartTab client={client} regatta={snap.regatta} over={snap.suggestions.over} />
         ) : tab === 'finishes' ? (
-          <FinishesTab client={client} regatta={snap.regatta} pending={snap.pending} />
+          <FinishesTab client={client} regatta={snap.regatta} pending={snap.pending} suggested={snap.suggestions.finishes} />
+        ) : tab === 'map' ? (
+          <MapTab client={client} regatta={snap.regatta} tracks={snap.tracks} />
         ) : tab === 'setup' ? (
-          <SetupTab client={client} regatta={snap.regatta} />
+          <SetupTab client={client} regatta={snap.regatta} heard={snap.heard} tracks={snap.tracks} />
         ) : tab === 'results' ? (
           <ResultsTab client={client} regatta={snap.regatta} />
+        ) : tab === 'track' ? (
+          <TrackTab client={client} regatta={snap.regatta} gps={gps} fixesWaiting={snap.fixesWaiting} shareProblem={snap.shareProblem} />
         ) : (
-          <LiveTab client={client} regatta={snap.regatta} />
+          <LiveTab client={client} regatta={snap.regatta} tracks={snap.tracks} />
         )}
       </main>
     </div>

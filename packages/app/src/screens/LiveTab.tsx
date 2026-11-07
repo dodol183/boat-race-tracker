@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { activeRace, nextSignal, phaseAt, type RegattaState } from '@brt/engine';
+import { activeRace, nextSignal, phaseAt, type Fix, type RegattaState } from '@brt/engine';
 import type { RegattaClient } from '../lib/client.ts';
 import { useServerNow } from '../lib/useRegatta.ts';
 import { countdown, duration } from '../lib/format.ts';
 import { Card, Pill } from '../ui/kit.tsx';
 import { ClassChips, RaceTable } from '../ui/results.tsx';
+import { RaceMap } from '../ui/RaceMap.tsx';
 
 const SIGNAL = { WARNING: 'warning signal', PREPARATORY: 'preparatory signal', ONE_MINUTE: 'one minute', START: 'start' } as const;
 
 /** What a spectator or skipper sees: where each class is, and the race as it finishes */
-export function LiveTab({ client, regatta }: { client: RegattaClient; regatta: RegattaState }) {
+export function LiveTab({ client, regatta, tracks }: { client: RegattaClient; regatta: RegattaState; tracks: Record<string, Fix[]> }) {
   const now = useServerNow(client, 500);
   const classes = Object.values(regatta.classes).sort((a, b) => a.name.localeCompare(b.name));
   const [classId, setClassId] = useState<string | undefined>(classes[0]?.id);
@@ -52,6 +53,7 @@ export function LiveTab({ client, regatta }: { client: RegattaClient; regatta: R
       <Card title={race ? `${cls.name} · Race ${race.number}` : cls.name} actions={phase && <Pill tone={tone}>{label[phase]}</Pill>}>
         <div aria-live="polite" aria-atomic="true" className="space-y-1">{status}</div>
       </Card>
+      <RaceMap regatta={regatta} tracks={tracks} now={now} />
       {race && (phase === 'RACING' || phase === 'FINISHED') && race.startedAt !== undefined && (
         <Card title={phase === 'RACING' ? 'Provisional results' : 'Results'}>
           <RaceTable regatta={regatta} race={race} />

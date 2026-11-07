@@ -42,3 +42,16 @@ body {
 }
 :focus-visible { outline: 3px solid var(--color-accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Sail numbers on the map: dark on white, readable over sea, land or a blank map */
+.boat-label span {
+  display: inline-block;
+  font: 700 12px/1.1 system-ui, sans-serif;
+  color: #111827;
+  background: #ffffff;
+  border: 1px solid #111827;
+  border-radius: 4px;
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+.leaflet-container.leaflet-container { font: inherit; background: #dbeafe; }

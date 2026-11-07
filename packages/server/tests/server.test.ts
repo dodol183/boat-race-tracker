@@ -265,3 +265,78 @@ test('server: only the race office is told the skipper PIN', { timeout: 30_000 }
     await srv.close();
   }
 });
+
+test('server: positions from skippers and the race office, kept and shared; GPS suggestions to the race office only', { timeout: 30_000 }, async () => {
+  const dbPath = path.join(dir, 'positions.db');
+  const clock = { now: T0 };
+  let server = await startServer({ port: 0, dbPath, adminToken: ADMIN, now: () => clock.now, tickMs: 20 });
+  const reg = server.store.createRegatta('Tracking', T0);
+  const officer = new Device(server.port);
+  const skipper = new Device(server.port);
+  const spectator = new Device(server.port);
+  await Promise.all([officer.open(), skipper.open(), spectator.open()]);
+  await officer.hello(reg.id, reg.officerPin);
+  assert.equal((await skipper.hello(reg.id, reg.skipperPin)).role, 'SKIPPER');
+  await spectator.hello(reg.id);
+  assert.deepEqual((await spectator.next('positions')).trackers, []);
+  assert.equal((await officer.next('heard')).trackers.length, 0);
+
+  // Positions a metre-scale walk north from a point at sea
+  const ORIGIN = { lat: 1, lng: 1 };
+  const at = (x: number, y: number) => ({ lat: ORIGIN.lat + y / 111_320, lng: ORIGIN.lng + x / 111_303 });
+  await officer.command('o1', { type: 'saveClass', class: { id: 'c1', name: 'Class 1', ratingSystem: 'IRC' } });
+  await officer.command('o2', { type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 11', name: 'Alpha', rating: 1 } });
+  await officer.command('o3', { type: 'saveBoat', boat: { id: 'b', classId: 'c1', sailNumber: 'MAS 22', name: 'Bravo', rating: 1 } });
+
+  // A skipper may connect a phone only once the race office allows it
+  assert.equal(((await skipper.command('s1', { type: 'claimTracker', boatId: 'a', trackerId: 'phone-skip01' })) as any).error.code, 'CLAIM_OFF');
+  assert.equal(((await skipper.command('s2', { type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 99', name: '', rating: 1 } })) as any).error.code, 'NOT_ALLOWED');
+  await officer.command('o4', { type: 'setOptions', options: { skippersConnectTrackers: true } });
+  assert.equal((await skipper.command('s3', { type: 'claimTracker', boatId: 'a', trackerId: 'phone-skip01' })).ok, true);
+
+  // The skipper's phone shares two fixes; everyone sees them
+  skipper.send({ t: 'positions', id: 'p1', trackerId: 'phone-skip01', fixes: [{ ...at(0, -50), fixTime: T0 - 2000 }, { ...at(0, -40), fixTime: T0 - 1000 }, { lat: 0, lng: 0, fixTime: T0 }] });
+  assert.deepEqual(await skipper.next('positionsAck', (m) => m.id === 'p1'), { t: 'positionsAck', id: 'p1', accepted: 2 });
+  const seen = await spectator.next('positions', (m) => !m.full);
+  assert.deepEqual(seen.trackers.map((t) => [t.trackerId, t.fixes.length]), [['phone-skip01', 2]]);
+
+  // Spectators can't share; a stranger's radio heard by a relay is noted for the race office, without where it is
+  spectator.send({ t: 'positions', id: 'p2', trackerId: 'phone-spec01', fixes: [{ ...at(0, 0), fixTime: T0 }] });
+  assert.equal((await spectator.next('positionsAck')).error?.code, 'NOT_ALLOWED');
+  skipper.send({ t: 'positions', id: 'p3', trackerId: '!A1B2C3D4', fixes: [{ ...at(500, 500), fixTime: T0 }] });
+  assert.deepEqual(await skipper.next('positionsAck', (m) => m.id === 'p3'), { t: 'positionsAck', id: 'p3', accepted: 0, unbound: true });
+  assert.deepEqual((await officer.next('heard', (m) => m.trackers.length > 0)).trackers, [{ trackerId: '!a1b2c3d4', at: T0 }]);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(spectator.msgs.some((m) => m.t === 'heard'), false);
+
+  // The background service's HTTP route, when the socket is down
+  const post = (pin: string, body: unknown) =>
+    fetch(`http://127.0.0.1:${server.port}/api/regattas/${reg.id}/positions`, { method: 'POST', headers: { 'x-regatta-pin': pin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await post('000000', { trackerId: 'phone-skip01', fixes: [] })).status, 401);
+  const viaHttp = await post(reg.skipperPin, { trackerId: 'phone-skip01', fixes: [{ ...at(0, -30), fixTime: T0 }] });
+  assert.deepEqual([viaHttp.status, await viaHttp.json()], [200, { accepted: 1 }]);
+
+  // Over the line at the gun: the race office is told, nobody else
+  await officer.command('o5', { type: 'setCourse', course: { startPin: at(-100, 0), startCommittee: at(100, 0), firstMark: at(0, 1000) } });
+  await officer.command('o6', { type: 'startSequence', classId: 'c1' });
+  const gun = T0 + 5 * 60_000;
+  clock.now = gun + 3000;
+  skipper.send({ t: 'positions', id: 'p4', trackerId: 'phone-skip01', fixes: [{ ...at(0, 4), fixTime: gun - 3000 }, { ...at(0, 16), fixTime: gun + 3000 }] });
+  const sg = await officer.next('suggestions', (m) => m.over.length > 0);
+  assert.deepEqual(sg.over, [{ raceId: 'c1-R1', boatId: 'a', metres: 10 }]);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(spectator.msgs.some((m) => m.t === 'suggestions') || skipper.msgs.some((m) => m.t === 'suggestions'), false);
+
+  // After a restart, a device that joins gets the recent track
+  for (const d of [officer, skipper, spectator]) d.close();
+  await server.close();
+  server = await startServer({ port: 0, dbPath, adminToken: ADMIN, now: () => clock.now, tickMs: 20 });
+  const late = new Device(server.port);
+  await late.open();
+  await late.hello(reg.id);
+  const snap = await late.next('positions');
+  assert.equal(snap.full, true);
+  assert.deepEqual(snap.trackers.map((t) => [t.trackerId, t.fixes.map((f) => f.fixTime)]), [['phone-skip01', [T0 - 2000, T0 - 1000, T0, gun - 3000, gun + 3000]]]);
+  late.close();
+  await server.close();
+});
