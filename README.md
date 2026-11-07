@@ -30,6 +30,14 @@ npm run build     # the app, into packages/app/dist
 While working on the screens, run the server (below) and `npm run dev -w @brt/app`. Vite serves the
 app on port 5173 and passes `/api` and `/ws` to the server on port 3000.
 
+## Sailwave
+
+Results → Export (on the website, race office) gives two files per class for Sailwave: the
+competitors (File → Import → Competitors) and the race results with start and finish times of day
+or a scoring code (File → Import → Race results). Sailwave then scores with its own settings.
+The column names follow Sailwave's field names; its import wizard lets you map any it doesn't
+recognise. Sailwave's own `.blw` file is undocumented, so it isn't written.
+
 ## Deploy on cPanel
 
 `npm run deploy:build` makes `deploy-out/boat-race-tracker-cpanel.zip`: the server bundled into one

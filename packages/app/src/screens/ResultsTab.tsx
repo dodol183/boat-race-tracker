@@ -3,6 +3,8 @@ import type { PenaltyCode, RegattaState } from '@brt/engine';
 import type { RegattaClient } from '../lib/client.ts';
 import { Button, Card, Pill } from '../ui/kit.tsx';
 import { ClassChips, RaceTable, SeriesTable, seriesCsv } from '../ui/results.tsx';
+import { sailwaveCompetitors, sailwaveResults } from '../lib/sailwave.ts';
+import { isNativeApp } from '../lib/platform.ts';
 
 /** Race results and series standings. The race office can also give scoring codes here. */
 export function ResultsTab({ client, regatta }: { client: RegattaClient; regatta: RegattaState }) {
@@ -20,11 +22,11 @@ export function ResultsTab({ client, regatta }: { client: RegattaClient; regatta
 
   if (!cls) return <p className="text-muted">No classes yet.</p>;
 
-  const download = () => {
-    const blob = new Blob([seriesCsv(regatta, cls.id)], { type: 'text/csv' });
+  const download = (text: string, what: string) => {
+    const blob = new Blob([text], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${cls.name.replace(/[^\w-]+/g, '_')}_series.csv`;
+    a.download = `${cls.name.replace(/[^\w-]+/g, '_')}_${what}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
@@ -35,11 +37,30 @@ export function ResultsTab({ client, regatta }: { client: RegattaClient; regatta
 
       <Card
         title={`${cls.name} · Series`}
-        actions={officer && <Button onClick={download}>Download CSV</Button>}
       >
         <SeriesTable regatta={regatta} classId={cls.id} />
         <p className="text-sm text-muted">Low Point System (RRS Appendix A). One discard from 4 races. Discarded scores in brackets.</p>
       </Card>
+
+      {officer && (
+        <Card title="Export">
+          {isNativeApp() ? (
+            <p className="text-muted">Export from the website on a computer: open this regatta there with the race office PIN, then Results → Export.</p>
+          ) : (
+          <>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => download(sailwaveCompetitors(regatta, cls.id), 'sailwave_competitors')}>Sailwave: competitors</Button>
+            <Button onClick={() => download(sailwaveResults(regatta, cls.id), 'sailwave_results')}>Sailwave: race results</Button>
+            <Button onClick={() => download(seriesCsv(regatta, cls.id), 'series')}>Series table (CSV)</Button>
+          </div>
+          <p className="text-sm text-muted">
+            In Sailwave: import the competitors first (File → Import → Competitors), then the race results
+            (File → Import → Race results). Sailwave works out corrected times and points with its own settings.
+          </p>
+          </>
+          )}
+        </Card>
+      )}
 
       {race ? (
         <Card
