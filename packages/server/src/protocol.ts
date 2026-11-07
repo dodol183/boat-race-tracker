@@ -14,7 +14,7 @@ export type ClientMessage =
   | { t: 'ping'; clientTime: number };
 
 export type ServerMessage =
-  | { t: 'welcome'; regattaId: string; name: string; role: Role; seq: number; serverTime: number; state?: RegattaState; events?: StoredEvent[] }
+  | { t: 'welcome'; regattaId: string; name: string; role: Role; /** Only to the race office, to share with skippers */ skipperPin?: string; seq: number; serverTime: number; state?: RegattaState; events?: StoredEvent[] }
   | { t: 'events'; events: StoredEvent[] }
   | { t: 'result'; id: string; ok: true; seq: number; duplicate?: boolean }
   | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean }

@@ -1,5 +1,7 @@
 // HTTP and WebSocket around the regatta hubs.
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RegattaHub, type Role } from './hub.ts';
@@ -15,7 +17,22 @@ export interface ServerOptions {
   now?: () => number;
   /** How often time-driven events (the start gun) are checked */
   tickMs?: number;
+  /** The built app (packages/app/dist), served at / with index.html for any other page */
+  staticDir?: string;
 }
+
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+};
 
 /** Wrong-PIN limit per address and regatta: PINs are short */
 const PIN_WINDOW_MS = 15 * 60_000;
@@ -95,6 +112,10 @@ export async function startServer(opts: ServerOptions) {
         return json(res, 200, { id: r.id, name: r.name, seq: hub.seq, serverTime: now(), state: hub.state });
       }
 
+      if ((req.method === 'GET' || req.method === 'HEAD') && opts.staticDir && !url.pathname.startsWith('/api/')) {
+        return serveStatic(opts.staticDir, url.pathname, req, res);
+      }
+
       json(res, 404, { error: 'Not found.' });
     } catch {
       json(res, 400, { error: 'Bad request.' });
@@ -149,6 +170,7 @@ export async function startServer(opts: ServerOptions) {
           regattaId: r.id,
           name: r.name,
           role,
+          ...(role === 'OFFICER' ? { skipperPin: r.skipperPin } : {}),
           seq: hub.seq,
           serverTime: now(),
           ...(catchUp ? { events: hub.eventsSince(msg.lastSeq!) } : { state: hub.state }),
@@ -161,7 +183,7 @@ export async function startServer(opts: ServerOptions) {
 
       if (msg.t === 'resync') {
         const r = store.getRegatta(hub.regattaId)!;
-        return send({ t: 'welcome', regattaId: r.id, name: r.name, role, seq: hub.seq, serverTime: now(), state: hub.state });
+        return send({ t: 'welcome', regattaId: r.id, name: r.name, role, ...(role === 'OFFICER' ? { skipperPin: r.skipperPin } : {}), seq: hub.seq, serverTime: now(), state: hub.state });
       }
 
       if (msg.t === 'command') {
@@ -195,4 +217,35 @@ export async function startServer(opts: ServerOptions) {
       store.close();
     },
   };
+}
+
+/** A file from the app build; any path that isn't a file gets index.html (the app routes itself) */
+function serveStatic(root: string, pathname: string, req: http.IncomingMessage, res: http.ServerResponse) {
+  const base = path.resolve(root);
+  let file = path.resolve(base, '.' + decodeURIComponent(pathname));
+  if (!file.startsWith(base + path.sep) && file !== base) file = base;
+  let stat = fs.statSync(file, { throwIfNoEntry: false });
+  if (!stat?.isFile()) {
+    // A missing asset is a real 404; a page address is the app
+    if (pathname.startsWith('/assets/')) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      return res.end('Not found');
+    }
+    file = path.join(base, 'index.html');
+    stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (!stat?.isFile()) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      return res.end('The app has not been built (npm run build).');
+    }
+  }
+  // Built assets have a hash in their name and never change; index.html must always be fresh
+  const immutable = file.startsWith(path.join(base, 'assets') + path.sep);
+  res.writeHead(200, {
+    'content-type': TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': stat.size,
+    'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    'x-content-type-options': 'nosniff',
+  });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(file).pipe(res);
 }

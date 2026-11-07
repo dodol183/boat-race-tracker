@@ -2,11 +2,17 @@
   "name": "boat-race-tracker",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=22.13" },
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "test": "npm test --workspaces --if-present",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "build": "npm run build -w @brt/app",
+    "start": "npm start -w @brt/server"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

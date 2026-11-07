@@ -213,3 +213,55 @@ test('server: wrong PINs are limited per address and regatta', { timeout: 30_000
   d.close();
   await server.close();
 });
+
+test('server: serves the app build, with index.html for page addresses and nothing outside it', { timeout: 30_000 }, async () => {
+  const site = fs.mkdtempSync(path.join(dir, 'site-'));
+  fs.mkdirSync(path.join(site, 'assets'));
+  fs.writeFileSync(path.join(site, 'index.html'), '<!doctype html><title>app</title>');
+  fs.writeFileSync(path.join(site, 'assets', 'app-1.js'), 'console.log(1)');
+  fs.writeFileSync(path.join(dir, 'secret.txt'), 'not for the web');
+  const srv = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN, staticDir: site });
+  try {
+    const get = (p: string) => fetch(`http://127.0.0.1:${srv.port}${p}`);
+    let r = await get('/');
+    assert.equal(r.status, 200);
+    assert.match(await r.text(), /<title>app/);
+    assert.equal(r.headers.get('cache-control'), 'no-cache');
+    r = await get('/assets/app-1.js');
+    assert.equal(r.headers.get('content-type'), 'text/javascript; charset=utf-8');
+    assert.match(r.headers.get('cache-control')!, /immutable/);
+    assert.equal((await get('/assets/missing.js')).status, 404);
+    assert.match(await (await get('/some/page?r=ABC')).text(), /<title>app/, 'the app handles its own addresses');
+    assert.doesNotMatch(await (await get('/..%2fsecret.txt')).text(), /not for the web/);
+    assert.doesNotMatch(await (await get('/%2e%2e/secret.txt')).text(), /not for the web/);
+    assert.equal((await get('/api/nothing')).status, 404, 'the API stays JSON');
+    assert.equal((await get('/api/health')).status, 200);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('server: only the race office is told the skipper PIN', { timeout: 30_000 }, async () => {
+  const srv = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN });
+  try {
+    const reg = srv.store.createRegatta('Pins', Date.now());
+    const hello = (pin?: string) =>
+      new Promise<any>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`);
+        ws.on('open', () => ws.send(JSON.stringify({ t: 'hello', regattaId: reg.id, ...(pin ? { pin } : {}) })));
+        ws.on('message', (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.t === 'welcome') {
+            ws.close();
+            resolve(m);
+          }
+        });
+        ws.on('error', reject);
+      });
+    assert.equal((await hello(reg.officerPin)).skipperPin, reg.skipperPin);
+    assert.equal((await hello(reg.skipperPin)).skipperPin, undefined);
+    assert.equal((await hello()).skipperPin, undefined);
+  } finally {
+    await srv.close();
+  }
+});

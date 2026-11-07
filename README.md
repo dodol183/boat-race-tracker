@@ -14,7 +14,7 @@ show what the server sends back. The plan, scope and phases are in [docs/PLAN.md
 |---|---|---|
 | [`packages/engine`](packages/engine) | Racing rules as pure functions: start sequence, AP, general and individual recall, finishes, penalty codes, corrected time, race and series scoring (RRS Appendix A) | Phase 1: done, with tests |
 | [`packages/server`](packages/server) | Node server: runs the engine, stores every event in SQLite, keeps devices in step over WebSocket | Phase 2: done, with tests |
-| `packages/app` | React app (website + Android app via Capacitor) for race officers, skippers and spectators | Phases 3–4 |
+| [`packages/app`](packages/app) | React app for the race office (start, finishes, results, setup) and for skippers and spectators (live, results). Works offline: commands wait on the device and go when the connection is back | Phase 3: website done, with tests. Android app (Capacitor) is phase 4 |
 
 ## Develop
 
@@ -24,15 +24,24 @@ Needs Node 22.13 or later.
 npm install
 npm test          # all packages
 npm run typecheck
+npm run build     # the app, into packages/app/dist
 ```
+
+While working on the screens, run the server (below) and `npm run dev -w @brt/app`. Vite serves the
+app on port 5173 and passes `/api` and `/ws` to the server on port 3000.
 
 ## Run the server
 
 ```sh
-ADMIN_TOKEN=<at least 16 characters> DATA_DIR=./data npm start -w @brt/server
+npm run build
+ADMIN_TOKEN=<at least 16 characters> DATA_DIR=./data npm start
 # create a regatta (returns its code and the race officer and skipper PINs)
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"name":"Club Race"}' localhost:3000/api/regattas
 ```
+
+The server serves the app at `/`. Open it, enter the regatta code, and enter the race officer PIN
+to run the race. Spectators need only the code, or the link from the Setup tab
+(`/?r=<code>`). The race office sees the skipper PIN on the Setup tab.
 
 Devices connect to `ws://host/ws` and send `{"t":"hello","regattaId":"<code>","pin":"<PIN>"}`.
 The PIN decides the role: race officer (commands), skipper or spectator (watch). See

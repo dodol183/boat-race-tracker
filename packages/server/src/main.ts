@@ -2,6 +2,7 @@
 //   PORT          (default 3000; cPanel sets it)
 //   DATA_DIR      folder for the SQLite file (outside public_html in production)
 //   ADMIN_TOKEN   needed to create regattas; the server won't start without one
+//   STATIC_DIR    the built app (default: packages/app/dist next to this package)
 import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from './server.ts';
@@ -14,10 +15,14 @@ if (adminToken.length < 16) {
 const dataDir = process.env.DATA_DIR ?? path.resolve('data');
 fs.mkdirSync(dataDir, { recursive: true });
 
+const staticDir = process.env.STATIC_DIR ?? path.resolve(import.meta.dirname, '../../app/dist');
+if (!fs.existsSync(path.join(staticDir, 'index.html'))) console.warn(`No app build in ${staticDir}: run npm run build. The API still works.`);
+
 const server = await startServer({
   port: Number(process.env.PORT) || 3000,
   dbPath: path.join(dataDir, 'regattas.db'),
   adminToken,
+  staticDir,
 });
 console.log(`Boat Race Tracker server on port ${server.port}, data in ${dataDir}`);
 

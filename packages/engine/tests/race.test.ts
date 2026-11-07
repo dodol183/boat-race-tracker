@@ -99,7 +99,9 @@ test('finishes: timed by the server, checked, and undoable while racing', () => 
   assert.equal(g.refused({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a' }, g.at(4)), 'NOT_RACING');
   assert.equal(g.refused({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a', at: g.at(4) }, g.at(30)), 'BEFORE_START');
   assert.equal(g.refused({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a', at: g.at(31) }, g.at(30)), 'IN_FUTURE');
-  g.do({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a' }, g.at(30));
+  // A device clock a second ahead means "now"
+  g.do({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a', at: g.at(30) + 1000 }, g.at(30));
+  assert.equal(g.race('c1-R1').entries.a!.finishAt, g.at(30));
   assert.equal(g.refused({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'a' }, g.at(31)), 'ALREADY_FINISHED');
   g.do({ type: 'recordFinish', raceId: 'c1-R1', boatId: 'b', at: g.at(30.5), source: 'GPS' }, g.at(31));
   assert.equal(g.race('c1-R1').entries.b!.finishSource, 'GPS');

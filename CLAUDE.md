@@ -21,9 +21,16 @@ view. Anything else waits.
   answers each command id once (resends get the first answer), and fires the start gun on a
   timer (`tick`). Inject the clock (`now`) in tests instead of waiting.
 
+- **App:** `packages/app`, React + Tailwind, phone first (44 px targets, works at 375 px).
+  `RegattaClient` (`src/lib/client.ts`) is the only thing that talks to the server; it has no
+  React or DOM so it is tested in Node and reused by the Android app. Screens read state and call
+  `client.send(command)`; they never change state themselves. Use `client.serverNow()` for any
+  time shown or sent (finish taps carry `at`).
+
 ## Commands
 
-- `npm install`, `npm test`, `npm run typecheck` (Node 22.13+).
+- `npm install`, `npm test`, `npm run typecheck`, `npm run build` (Node 22.13+).
+- `npm run dev -w @brt/app` with the server running on port 3000.
 
 ## Hosting
 

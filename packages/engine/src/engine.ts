@@ -9,6 +9,8 @@ export const MINUTE = 60_000;
 export const X_FLAG_LIMIT_MS = 4 * MINUTE;
 /** Race Signals (AP, first substitute): the warning signal is made 1 minute after removal */
 export const RESUME_DELAY_MS = 1 * MINUTE;
+/** A device's estimate of the server clock can be a little ahead; within this, "now" is meant */
+export const CLOCK_TOLERANCE_MS = 2_000;
 
 // ---------------------------------------------------------------------------------------------
 // Commands
@@ -242,9 +244,10 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       if (!e) return refuse('NOT_IN_RACE', 'That boat is not in this race.');
       if (e.finishAt !== undefined) return refuse('ALREADY_FINISHED', `${boatLabel(state, cmd.boatId)} already has a finish.`);
       if (e.penalty && e.penalty !== 'OCS') return refuse('HAS_PENALTY', `${boatLabel(state, cmd.boatId)} is scored ${e.penalty}. Clear that first.`);
-      const at = cmd.at ?? now;
-      if (!Number.isFinite(at) || at < r.startedAt) return refuse('BEFORE_START', 'A finish can’t be before the start.');
-      if (at > now) return refuse('IN_FUTURE', 'A finish can’t be in the future.');
+      if (cmd.at !== undefined && (!Number.isFinite(cmd.at) || cmd.at > now + CLOCK_TOLERANCE_MS)) return refuse('IN_FUTURE', 'A finish can’t be in the future.');
+      // A tap timed by the device on its estimate of the server clock may be a hair ahead
+      const at = Math.min(cmd.at ?? now, now);
+      if (at < r.startedAt) return refuse('BEFORE_START', 'A finish can’t be before the start.');
       return accept({ type: 'finishRecorded', raceId: r.id, boatId: cmd.boatId, at, source: cmd.source ?? 'TAP' });
     }
 

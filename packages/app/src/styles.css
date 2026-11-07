@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* Readable in sunlight first: dark text on near-white, one strong accent, signal colours for state */
+@theme {
+  --color-canvas: #f6f8fb;
+  --color-surface: #ffffff;
+  --color-ink: #0b1a2e;
+  --color-muted: #475569;
+  --color-line: #cbd5e1;
+  --color-accent: #0b5cad;
+  --color-accent-ink: #ffffff;
+  --color-go: #14753a;
+  --color-warn: #a35200;
+  --color-stop: #b42318;
+  --font-sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-canvas: #0b1220;
+    --color-surface: #131c2e;
+    --color-ink: #e8eef7;
+    --color-muted: #a3b2c7;
+    --color-line: #2a3a55;
+    --color-accent: #5aa2ff;
+    --color-accent-ink: #061226;
+    --color-go: #4ade80;
+    --color-warn: #fbbf24;
+    --color-stop: #f87171;
+  }
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-tap-highlight-color: transparent;
+}
+:focus-visible { outline: 3px solid var(--color-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
