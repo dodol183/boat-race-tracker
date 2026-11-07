@@ -1,5 +1,6 @@
 // SQLite: regattas, their events (the record), and the commands already answered.
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { Fix, RegattaEvent } from '@brt/engine';
 
@@ -26,6 +27,8 @@ export function openStore(path: string) {
   const db = new DatabaseSync(path);
   db.exec(`
     PRAGMA journal_mode = WAL;
+    -- Another server process writing: wait for it rather than fail
+    PRAGMA busy_timeout = 5000;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS regattas (
       id TEXT PRIMARY KEY,
@@ -61,6 +64,7 @@ export function openStore(path: string) {
       received_at INTEGER NOT NULL,
       PRIMARY KEY (regatta_id, tracker_id, fix_time)
     ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS fixes_received ON fixes (regatta_id, received_at);
   `);
 
   const insertEvent = db.prepare('INSERT INTO events (regatta_id, seq, at, command_id, body) VALUES (?, ?, ?, ?, ?)');
@@ -125,16 +129,19 @@ export function openStore(path: string) {
     /** Fixes taken since `since`, by tracker, oldest first */
     fixesSince(regattaId: string, since: number): Map<string, Fix[]> {
       const rows = db.prepare('SELECT tracker_id, fix_time, lat, lng, speed_kt, heading_deg FROM fixes WHERE regatta_id = ? AND fix_time >= ? ORDER BY tracker_id, fix_time').all(regattaId, since) as any[];
-      const out = new Map<string, Fix[]>();
-      for (const r of rows) {
-        const f: Fix = { lat: r.lat, lng: r.lng, fixTime: r.fix_time };
-        if (r.speed_kt !== null) f.speedKt = r.speed_kt;
-        if (r.heading_deg !== null) f.headingDeg = r.heading_deg;
-        const list = out.get(r.tracker_id);
-        if (list) list.push(f);
-        else out.set(r.tracker_id, [f]);
-      }
-      return out;
+      return groupFixes(rows);
+    },
+
+    /** Fixes stored since `since` (by when they arrived), by tracker: what other processes took */
+    fixesReceivedSince(regattaId: string, since: number): Map<string, Fix[]> {
+      const rows = db.prepare('SELECT tracker_id, fix_time, lat, lng, speed_kt, heading_deg FROM fixes WHERE regatta_id = ? AND received_at >= ? ORDER BY tracker_id, fix_time').all(regattaId, since) as any[];
+      return groupFixes(rows);
+    },
+
+    /** A consistent copy of the whole database, safe while the server runs */
+    backup(file: string) {
+      fs.rmSync(file, { force: true });
+      db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
     },
 
     close() {
@@ -144,3 +151,16 @@ export function openStore(path: string) {
 }
 
 export type Store = ReturnType<typeof openStore>;
+
+function groupFixes(rows: any[]): Map<string, Fix[]> {
+  const out = new Map<string, Fix[]>();
+  for (const r of rows) {
+    const f: Fix = { lat: r.lat, lng: r.lng, fixTime: r.fix_time };
+    if (r.speed_kt !== null) f.speedKt = r.speed_kt;
+    if (r.heading_deg !== null) f.headingDeg = r.heading_deg;
+    const list = out.get(r.tracker_id);
+    if (list) list.push(f);
+    else out.set(r.tracker_id, [f]);
+  }
+  return out;
+}

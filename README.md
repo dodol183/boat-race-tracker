@@ -30,6 +30,15 @@ npm run build     # the app, into packages/app/dist
 While working on the screens, run the server (below) and `npm run dev -w @brt/app`. Vite serves the
 app on port 5173 and passes `/api` and `/ws` to the server on port 3000.
 
+## Deploy on cPanel
+
+`npm run deploy:build` makes `deploy-out/boat-race-tracker-cpanel.zip`: the server bundled into one
+file, the website, and a startup file for cPanel's Setup Node.js App. Nothing to install on the
+host. CI attaches the same zip to the **Test build** release. The steps are in
+[docs/DEPLOY_CPANEL.md](docs/DEPLOY_CPANEL.md). The server keeps a daily copy of its database in
+`DATA_DIR/backups` (seven, one per weekday), and if cPanel starts a second copy of the app, the
+copies stay in step through the database.
+
 ## Run the server
 
 ```sh

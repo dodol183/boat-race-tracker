@@ -45,7 +45,11 @@ view. Anything else waits.
 - `npm install`, `npm test`, `npm run typecheck`, `npm run build` (Node 22.13+).
 - `npm run dev -w @brt/app` with the server running on port 3000.
 - The Android APK is built by `.github/workflows/ci.yml` (this environment has no Android SDK).
+- `npm run deploy:build`: the cPanel zip (`scripts/build-deploy.mjs`, startup file `scripts/deploy/app.js`).
 
 ## Hosting
 
-cPanel (Exabytes) with Node 22, built-in `node:sqlite`. No JSON fallback store.
+cPanel (Exabytes) with Node 22, built-in `node:sqlite`. No JSON fallback store. Steps in
+`docs/DEPLOY_CPANEL.md`. cPanel may run more than one copy of the server: each hub reads the
+events and fixes the others stored (`syncFromStore`, `syncFixes`), so never keep race state that
+isn't in the database.

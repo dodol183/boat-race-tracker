@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Card, Field, inputClass } from '../ui/kit.tsx';
-import { isNativeApp, serverOrigin, setServerOrigin } from '../lib/platform.ts';
+import { createRegatta, isNativeApp, serverOrigin, setServerOrigin, type CreatedRegatta } from '../lib/platform.ts';
 
 export interface Joined {
   regattaId: string;
@@ -47,6 +47,80 @@ export function Join({ onJoin, initial, problem }: { onJoin: (j: Joined) => void
           <Button tone="primary" type="submit" disabled={!clean} className="w-full">Join</Button>
         </form>
       </Card>
+      <NewRegatta
+        beforeSend={() => {
+          if (native && !setServerOrigin(server)) {
+            setServerProblem('Enter the server’s address, e.g. race.yourclub.org');
+            return false;
+          }
+          return true;
+        }}
+        onOpen={(r) => onJoin({ regattaId: r.id, pin: r.officerPin })}
+      />
     </main>
+  );
+}
+
+/** For whoever runs the server: a new regatta, with its code and PINs to hand out */
+function NewRegatta({ beforeSend, onOpen }: { beforeSend: () => boolean; onOpen: (r: CreatedRegatta) => void }) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const [made, setMade] = useState<CreatedRegatta>();
+
+  if (made) {
+    return (
+      <Card title={made.name}>
+        <p>Write these down: the server won’t show the PINs again.</p>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
+          <dt className="text-muted">Event code</dt>
+          <dd className="font-mono font-bold text-lg">{made.id}</dd>
+          <dt className="text-muted">Race office PIN</dt>
+          <dd className="font-mono font-bold text-lg">{made.officerPin}</dd>
+          <dt className="text-muted">Skipper PIN</dt>
+          <dd className="font-mono font-bold text-lg">{made.skipperPin}</dd>
+        </dl>
+        <p className="text-sm text-muted">The race office PIN runs the race: keep it to the race office. The skipper PIN shows again on the Setup tab.</p>
+        <Button tone="primary" className="w-full" onClick={() => onOpen(made)}>Open as the race office</Button>
+      </Card>
+    );
+  }
+  if (!open) {
+    return (
+      <div className="text-center">
+        <Button tone="quiet" onClick={() => setOpen(true)}>Run a new regatta</Button>
+      </div>
+    );
+  }
+  return (
+    <Card title="Run a new regatta">
+      <form
+        className="space-y-4"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!beforeSend()) return;
+          setBusy(true);
+          setProblem(undefined);
+          const r = await createRegatta(token, name.trim());
+          setBusy(false);
+          if (r.ok) setMade(r.regatta);
+          else setProblem(r.message);
+        }}
+      >
+        <Field label="Regatta name">
+          <input className={inputClass} required maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Club Race Saturday" />
+        </Field>
+        <Field label="Admin token" hint="Set as ADMIN_TOKEN when the server was installed">
+          <input className={`${inputClass} font-mono`} type="password" required value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+        </Field>
+        {problem && <p role="alert" className="text-stop font-semibold">{problem}</p>}
+        <div className="flex gap-2">
+          <Button tone="primary" type="submit" disabled={busy || !name.trim() || !token.trim()}>{busy ? 'Creating…' : 'Create'}</Button>
+          <Button tone="quiet" onClick={() => setOpen(false)}>Cancel</Button>
+        </div>
+      </form>
+    </Card>
   );
 }

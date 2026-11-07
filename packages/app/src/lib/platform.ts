@@ -66,3 +66,34 @@ const safeJson = (s: string) => {
     return {};
   }
 };
+
+export interface CreatedRegatta {
+  id: string;
+  name: string;
+  officerPin: string;
+  skipperPin: string;
+}
+
+/** Creates a regatta (needs the server's admin token); the answer, or why not in words */
+export async function createRegatta(adminToken: string, name: string): Promise<{ ok: true; regatta: CreatedRegatta } | { ok: false; message: string }> {
+  const url = `${serverOrigin()}/api/regattas`;
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${adminToken.trim()}`, 'x-admin-token': adminToken.trim() };
+  try {
+    let status: number;
+    let body: any;
+    if (isNativeApp()) {
+      const r = await CapacitorHttp.post({ url, headers, data: { name }, connectTimeout: 15_000, readTimeout: 15_000 });
+      status = r.status;
+      body = typeof r.data === 'string' ? safeJson(r.data) : r.data;
+    } else {
+      const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ name }) });
+      status = r.status;
+      body = await r.json().catch(() => ({}));
+    }
+    if (status === 201 && body?.id) return { ok: true, regatta: body };
+    if (status === 401) return { ok: false, message: 'That admin token is not right for this server.' };
+    return { ok: false, message: body?.error ?? `The server answered ${status}.` };
+  } catch {
+    return { ok: false, message: 'Could not reach the server. Check the connection (and, in the app, the server address).' };
+  }
+}

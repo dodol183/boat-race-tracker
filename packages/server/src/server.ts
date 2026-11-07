@@ -9,7 +9,8 @@ import { openStore, type Store } from './store.ts';
 import { MAX_FIXES_PER_MESSAGE, parseClientMessage, type ServerMessage } from './protocol.ts';
 
 export interface ServerOptions {
-  port: number;
+  /** A port number, or what the host gives: 'passenger' (cPanel's app runner) or a socket path */
+  port: number | string;
   /** SQLite file (':memory:' for tests) */
   dbPath: string;
   /** Needed to create regattas (until accounts come back) */
@@ -19,6 +20,8 @@ export interface ServerOptions {
   tickMs?: number;
   /** The built app (packages/app/dist), served at / with index.html for any other page */
   staticDir?: string;
+  /** Where the daily database copies go (seven, one per weekday) */
+  backupDir?: string;
 }
 
 const TYPES: Record<string, string> = {
@@ -97,7 +100,9 @@ export async function startServer(opts: ServerOptions) {
       req.on('error', reject);
     });
   const isAdmin = (req: http.IncomingMessage) => {
-    const given = Buffer.from((req.headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+    // x-admin-token as well: some cPanel web servers drop the Authorization header before Node
+    const raw = (req.headers['x-admin-token'] as string | undefined) ?? (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+    const given = Buffer.from(raw.trim());
     const want = Buffer.from(opts.adminToken);
     return opts.adminToken.length > 0 && given.length === want.length && timingSafeEqual(given, want);
   };
@@ -105,7 +110,10 @@ export async function startServer(opts: ServerOptions) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     try {
-      if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, serverTime: now() });
+      if (req.method === 'GET' && url.pathname === '/api/health') {
+        // What a deploy check needs: running, which build, which Node (node:sqlite needs 22.13+)
+        return json(res, 200, { ok: true, serverTime: now(), version: process.env.BRT_VERSION ?? 'dev', node: process.version });
+      }
 
       if (req.method === 'POST' && url.pathname === '/api/regattas') {
         if (!isAdmin(req)) return json(res, 401, { error: 'An admin token is needed to create a regatta.' });
@@ -239,7 +247,25 @@ export async function startServer(opts: ServerOptions) {
 
   await new Promise<void>((resolve) => server.listen(opts.port, resolve));
   const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : opts.port;
+  const port: number | string = typeof address === 'object' && address ? address.port : (address ?? opts.port);
+
+  // A copy of the database once a day, one per weekday, so a bad day can be undone
+  let backupTimer: ReturnType<typeof setInterval> | undefined;
+  if (opts.backupDir) {
+    const dir = opts.backupDir;
+    const backup = () => {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        const day = new Date(now()).toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
+        store.backup(path.join(dir, `regattas-${day}.db`));
+      } catch (err) {
+        console.error('Database backup failed:', err);
+      }
+    };
+    backup();
+    backupTimer = setInterval(backup, 24 * 60 * 60_000);
+    backupTimer.unref();
+  }
 
   return {
     port,
@@ -247,6 +273,7 @@ export async function startServer(opts: ServerOptions) {
     hubFor,
     async close() {
       clearInterval(timer);
+      if (backupTimer) clearInterval(backupTimer);
       for (const c of wss.clients) c.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));

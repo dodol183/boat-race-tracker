@@ -40,6 +40,7 @@ export class RegattaHub {
   /** Trackers heard that no boat has: when, but not where */
   private unbound = new Map<string, number>();
   private suggestionsJson = '{"over":[],"finishes":[]}';
+  private lastFixSync: number;
   private lastSuggest = 0;
 
   constructor(
@@ -50,6 +51,7 @@ export class RegattaHub {
     // The state is the events, replayed
     this.state = store.events(regattaId).reduce((s, e) => apply(s, e.event), emptyRegatta());
     this.trails = store.fixesSince(regattaId, now() - TRAIL_KEEP_MS);
+    this.lastFixSync = now();
     this.suggestionsJson = JSON.stringify(this.computeSuggestions());
   }
 
@@ -71,33 +73,95 @@ export class RegattaHub {
    * changes nothing, so a device can resend after a lost connection without doubling anything.
    */
   handle(role: Role, commandId: string, command: Command): CommandResult {
-    const seen = this.store.command(this.regattaId, commandId);
-    if (seen) return { ...seen.result, duplicate: true };
+    // A second try only if another server process stored events at the same moment
+    for (let attempt = 0; ; attempt++) {
+      this.syncFromStore();
+      const seen = this.store.command(this.regattaId, commandId);
+      if (seen) return { ...seen.result, duplicate: true };
 
-    const receivedAt = this.now();
-    const allowed = ALLOWED[role];
-    if (allowed !== 'ALL' && !allowed.has(command.type)) {
-      // Not recorded: unlocking with the right PIN and resending should then work
-      return { ok: false, error: { code: 'NOT_ALLOWED', message: 'Only the race office can do that. Unlock with the race officer PIN.' } };
-    }
+      const receivedAt = this.now();
+      const allowed = ALLOWED[role];
+      if (allowed !== 'ALL' && !allowed.has(command.type)) {
+        // Not recorded: unlocking with the right PIN and resending should then work
+        return { ok: false, error: { code: 'NOT_ALLOWED', message: 'Only the race office can do that. Unlock with the race officer PIN.' } };
+      }
 
-    const d = decide(this.state, command, receivedAt);
-    if (!d.ok) {
-      const result: CommandRecord['result'] = { ok: false, error: d.error };
-      this.store.append(this.regattaId, [], { id: commandId, receivedAt, result });
-      return result;
+      try {
+        const d = decide(this.state, command, receivedAt);
+        if (!d.ok) {
+          const result: CommandRecord['result'] = { ok: false, error: d.error };
+          this.store.append(this.regattaId, [], { id: commandId, receivedAt, result });
+          return result;
+        }
+        const stored = this.commit(d.events, receivedAt, (seq) => ({ id: commandId, receivedAt, result: { ok: true, seq } }));
+        return { ok: true, seq: stored.at(-1)?.seq ?? this.seq };
+      } catch (err) {
+        if (attempt === 0 && isConflict(err)) continue;
+        throw err;
+      }
     }
-    const stored = this.commit(d.events, receivedAt, (seq) => ({ id: commandId, receivedAt, result: { ok: true, seq } }));
-    return { ok: true, seq: stored.at(-1)?.seq ?? this.seq };
   }
 
   /** Events time alone causes (the start gun); called on a timer and before reading state */
   tick(): StoredEvent[] {
+    const synced = this.syncFromStore();
+    this.syncFixes();
     const events = advance(this.state, this.now());
-    const stored = events.length ? this.commit(events, this.now()) : [];
+    let stored: StoredEvent[] = [];
+    try {
+      stored = events.length ? this.commit(events, this.now()) : [];
+    } catch (err) {
+      // Another process fired the same gun first: take its record
+      if (!isConflict(err)) throw err;
+      stored = this.syncFromStore();
+    }
     // Suggestions also change with time (X can only fly for 4 minutes)
     if (this.now() - this.lastSuggest >= 1000) this.refreshSuggestions();
-    return stored;
+    return [...synced, ...stored];
+  }
+
+  // ------------------------------------------------------------------- more than one process
+  //
+  // cPanel's app runner may start a second copy of the server under load. Each copy keeps its
+  // state from the database, so before acting, and on every tick, it takes the events and positions
+  // the other copies stored, and passes them on to its own devices.
+
+  /** Events other processes stored since this one last looked */
+  syncFromStore(): StoredEvent[] {
+    const fresh = this.store.events(this.regattaId, this.state.version);
+    if (fresh.length === 0) return [];
+    let next = this.state;
+    const taken: StoredEvent[] = [];
+    for (const e of fresh) {
+      if (e.seq !== next.version + 1) break;
+      next = apply(next, e.event);
+      taken.push(e);
+    }
+    this.state = next;
+    for (const s of this.subscribers) s.events(taken);
+    this.refreshSuggestions();
+    if (taken.some((e) => e.event.type === 'trackerBound')) for (const s of this.subscribers) s.heard?.(this.heardList());
+    return taken;
+  }
+
+  /** Positions other processes stored since this one last looked */
+  private syncFixes() {
+    const since = this.lastFixSync;
+    this.lastFixSync = this.now();
+    const byTracker = this.store.fixesReceivedSince(this.regattaId, since - 1000);
+    const update: PositionsUpdate['trackers'] = [];
+    for (const [id, fixes] of byTracker) {
+      const trail = this.trails.get(id) ?? [];
+      const have = new Set(trail.slice(-2000).map((f) => f.fixTime));
+      const fresh = fixes.filter((f) => !have.has(f.fixTime));
+      if (fresh.length === 0) continue;
+      this.trails.set(id, mergeTrail(trail, fresh));
+      update.push({ trackerId: id, fixes: fresh });
+    }
+    if (update.length) {
+      for (const s of this.subscribers) s.positions?.({ trackers: update });
+      this.refreshSuggestions();
+    }
   }
 
   // ------------------------------------------------------------------------------------ positions
@@ -197,4 +261,9 @@ export class RegattaHub {
     if (events.some((e) => e.type === 'trackerBound')) for (const s of this.subscribers) s.heard?.(this.heardList());
     return stored;
   }
+}
+
+/** SQLite refusing a row another process wrote first (same event number or command id) */
+function isConflict(err: unknown): boolean {
+  return /constraint/i.test(String((err as Error)?.message ?? err));
 }

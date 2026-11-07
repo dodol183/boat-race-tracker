@@ -24,7 +24,7 @@ class Device {
   problems: string[] = [];
   private waiters: { match: (m: ServerMessage) => boolean; resolve: (m: ServerMessage) => void }[] = [];
 
-  constructor(port: number) {
+  constructor(port: number | string) {
     this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     this.ws.on('message', (raw) => {
       const m = JSON.parse(raw.toString()) as ServerMessage;
@@ -106,6 +106,10 @@ test('server: regattas, roles, commands, resends, catch-up, the gun and restarts
     body: JSON.stringify({ name: 'Langkawi Test Regatta' }),
   });
   assert.equal(created.status, 201);
+  // The same token in its own header, for hosts that drop Authorization
+  const viaHeader = await fetch(`${base()}/api/regattas`, { method: 'POST', headers: { 'x-admin-token': ADMIN }, body: JSON.stringify({ name: 'Second' }) });
+  assert.equal(viaHeader.status, 201);
+  assert.equal((await fetch(`${base()}/api/regattas`, { method: 'POST', headers: { 'x-admin-token': 'wrong-token-1234567890' }, body: JSON.stringify({ name: 'X' }) })).status, 401);
   const reg = (await created.json()) as { id: string; officerPin: string; skipperPin: string };
 
   const officerA = new Device(server.port);
@@ -339,4 +343,63 @@ test('server: positions from skippers and the race office, kept and shared; GPS 
   assert.deepEqual(snap.trackers.map((t) => [t.trackerId, t.fixes.map((f) => f.fixTime)]), [['phone-skip01', [T0 - 2000, T0 - 1000, T0, gun - 3000, gun + 3000]]]);
   late.close();
   await server.close();
+});
+
+test('server: two processes on one database stay in step (cPanel may start a second copy)', { timeout: 30_000 }, async () => {
+  const dbPath = path.join(dir, 'two-processes.db');
+  const clock = { now: T0 };
+  const a = await startServer({ port: 0, dbPath, adminToken: ADMIN, now: () => clock.now, tickMs: 20 });
+  const b = await startServer({ port: 0, dbPath, adminToken: ADMIN, now: () => clock.now, tickMs: 20 });
+  const reg = a.store.createRegatta('Two copies', T0);
+  const onA = new Device(a.port);
+  const onB = new Device(b.port);
+  await Promise.all([onA.open(), onB.open()]);
+  await onA.hello(reg.id, reg.officerPin);
+  await onB.hello(reg.id, reg.officerPin);
+
+  // Commands through either copy are numbered in one sequence and reach devices on both
+  await onA.command('a1', { type: 'saveClass', class: { id: 'c1', name: 'Class 1', ratingSystem: 'IRC' } });
+  const r2 = await onB.command('b1', { type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 11', name: '', rating: 1 } });
+  assert.deepEqual([r2.ok, r2.ok && r2.seq], [true, 2], 'B saw A’s event before acting');
+  await onA.command('a2', { type: 'saveBoat', boat: { id: 'b', classId: 'c1', sailNumber: 'MAS 22', name: '', rating: 1 } });
+  await onA.at(3);
+  await onB.at(3);
+  assert.deepEqual(onA.state, onB.state);
+
+  // A command resent to the other copy is still answered once
+  const again = await onB.command('a2', { type: 'saveBoat', boat: { id: 'b', classId: 'c1', sailNumber: 'MAS 22', name: '', rating: 1 } });
+  assert.equal(again.duplicate, true);
+
+  // The gun fires once, whichever copy notices first
+  await onA.command('a3', { type: 'startSequence', classId: 'c1' });
+  clock.now = T0 + 5 * 60_000 + 500;
+  await onA.at(5);
+  await onB.at(5);
+  const guns = a.store.events(reg.id).filter((e) => e.event.type === 'raceStarted');
+  assert.equal(guns.length, 1);
+
+  // Positions taken by one copy reach devices on the other
+  await onA.command('a4', { type: 'bindTracker', boatId: 'a', trackerId: '!a1b2c3d4' });
+  onA.send({ t: 'positions', id: 'p1', trackerId: '!a1b2c3d4', fixes: [{ lat: 1, lng: 1, fixTime: clock.now - 1000 }] });
+  const seen = await onB.next('positions', (m) => !m.full && m.trackers.some((t) => t.trackerId === '!a1b2c3d4'));
+  assert.equal(seen.trackers[0]!.fixes.length, 1);
+
+  onA.close();
+  onB.close();
+  await a.close();
+  await b.close();
+});
+
+test('server: keeps a daily copy of the database that opens with everything in it', { timeout: 30_000 }, async () => {
+  const backupDir = path.join(dir, 'backups');
+  const srv = await startServer({ port: 0, dbPath: path.join(dir, 'with-backup.db'), adminToken: ADMIN, backupDir, now: () => T0 });
+  const reg = srv.store.createRegatta('Backed up', T0);
+  srv.store.backup(path.join(backupDir, 'now.db'));
+  await srv.close();
+  const files = fs.readdirSync(backupDir).sort();
+  assert.ok(files.includes('regattas-Sat.db'), `made at start, named by weekday: ${files}`);
+  const { openStore } = await import('../src/store.ts');
+  const copy = openStore(path.join(backupDir, 'now.db'));
+  assert.equal(copy.getRegatta(reg.id)?.name, 'Backed up');
+  copy.close();
 });
