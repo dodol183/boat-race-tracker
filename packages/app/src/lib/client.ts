@@ -89,6 +89,8 @@ export interface ClientOptions {
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
+  /** Sends positions over HTTP (with this device's PIN), for when the socket can't */
+  postFixes?: (trackerId: string, fixes: Fix[]) => Promise<{ ok: boolean; status: number; accepted?: number; unbound?: boolean; error?: string }>;
 }
 
 const OPEN = 1;
@@ -98,6 +100,8 @@ const TRACK_KEEP_MS = 30 * 60_000;
 /** Positions kept while offline: about 7 hours at one every 5 s */
 const FIX_QUEUE_MAX = 5000;
 const FIXES_PER_MESSAGE = 200;
+/** After a failed HTTP send, the next try */
+const HTTP_RETRY_MS = 15_000;
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
 export class RegattaClient {
@@ -117,7 +121,10 @@ export class RegattaClient {
   private counter = 0;
   private fixQueue: QueuedFixes[] = [];
   /** The batch the server has but hasn't answered */
-  private fixesInFlight: { id: string; count: number } | null = null;
+  private fixesInFlight: { id: string; count: number; via: 'ws' | 'http' } | null = null;
+  /** Positions go over HTTP even while the socket is up (the app in the background) */
+  private fixesOverHttp = false;
+  private httpRetryTimer: unknown = null;
   private readonly deviceId: string;
   private readonly now: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -176,6 +183,8 @@ export class RegattaClient {
 
   close() {
     this.stopped = true;
+    if (this.httpRetryTimer) this.clearTimer(this.httpRetryTimer);
+    this.httpRetryTimer = null;
     if (this.reconnectTimer) this.clearTimer(this.reconnectTimer);
     if (this.pingTimer) this.clearTimer(this.pingTimer);
     const ws = this.ws;
@@ -222,6 +231,15 @@ export class RegattaClient {
     }
     this.saveFixes();
     this.update({ fixesWaiting: this.countFixes() });
+    this.flushFixes();
+  }
+
+  /**
+   * In the background Android throttles the WebView's socket; the app's native HTTP keeps going.
+   * Set while the app is hidden.
+   */
+  setFixesOverHttp(on: boolean) {
+    this.fixesOverHttp = on;
     this.flushFixes();
   }
 
@@ -285,7 +303,8 @@ export class RegattaClient {
     // A socket that went quiet may take minutes to report closing; don't wait for it
     if (ws.readyState < 2) ws.close();
     if (this.pingTimer) this.clearTimer(this.pingTimer);
-    this.fixesInFlight = null;
+    // A batch sent on this socket is lost with it and goes again
+    if (this.fixesInFlight?.via === 'ws') this.fixesInFlight = null;
     if (this.stopped || this.snap.status === 'failed') return;
     this.update({ status: 'offline' });
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)]!;
@@ -318,7 +337,7 @@ export class RegattaClient {
         this.save();
         // Whatever was queued while offline goes now, in order
         for (const item of this.snap.pending) this.transmit(item);
-        this.fixesInFlight = null;
+        if (this.fixesInFlight?.via === 'ws') this.fixesInFlight = null;
         this.flushFixes();
         return;
       }
@@ -365,18 +384,7 @@ export class RegattaClient {
       }
       case 'positionsAck': {
         if (this.fixesInFlight?.id !== m.id) return;
-        const { count } = this.fixesInFlight;
-        this.fixesInFlight = null;
-        const g = this.fixQueue[0];
-        if (g) {
-          g.fixes.splice(0, count);
-          if (g.fixes.length === 0) this.fixQueue.shift();
-        }
-        this.saveFixes();
-        // Turned away (spectator, unknown tracker): those positions are dropped, and the reason shown
-        const shareProblem = m.error ? m.error.message : m.unbound ? 'This tracker is not connected to a boat, so its positions are not kept.' : null;
-        this.update({ fixesWaiting: this.countFixes(), shareProblem });
-        this.flushFixes();
+        this.fixesTaken(m.error?.message ?? null, !!m.unbound);
         return;
       }
       case 'suggestions':
@@ -398,13 +406,46 @@ export class RegattaClient {
   }
 
   private flushFixes() {
-    if (this.fixesInFlight || this.snap.status !== 'live' || !this.ws || this.ws.readyState !== OPEN) return;
+    if (this.fixesInFlight || this.stopped || this.snap.status === 'failed') return;
     const g = this.fixQueue[0];
     if (!g) return;
     const fixes = g.fixes.slice(0, FIXES_PER_MESSAGE);
     const id = `${this.deviceId}-f${this.now().toString(36)}-${(this.counter++).toString(36)}`;
-    this.fixesInFlight = { id, count: fixes.length };
-    this.ws.send(JSON.stringify({ t: 'positions', id, trackerId: g.trackerId, fixes }));
+    const socketUp = this.snap.status === 'live' && !!this.ws && this.ws.readyState === OPEN;
+    if (socketUp && !(this.fixesOverHttp && this.opts.postFixes && this.opts.pin)) {
+      this.fixesInFlight = { id, count: fixes.length, via: 'ws' };
+      this.ws!.send(JSON.stringify({ t: 'positions', id, trackerId: g.trackerId, fixes }));
+      return;
+    }
+    // No socket (or the app in the background): HTTP, if this device has a PIN to send with
+    if (!this.opts.postFixes || !this.opts.pin || this.httpRetryTimer) return;
+    this.fixesInFlight = { id, count: fixes.length, via: 'http' };
+    void this.opts.postFixes(g.trackerId, fixes).then((r) => {
+      if (this.fixesInFlight?.id !== id) return;
+      if (r.ok) return this.fixesTaken(null, !!r.unbound);
+      if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return this.fixesTaken(r.error ?? 'The server turned these positions away.', false);
+      // No connection, or the server busy: try again later
+      this.fixesInFlight = null;
+      this.httpRetryTimer = this.setTimer(() => {
+        this.httpRetryTimer = null;
+        this.flushFixes();
+      }, HTTP_RETRY_MS);
+    });
+  }
+
+  /** The server has the batch in flight (or turned it away, with the reason): on to the next */
+  private fixesTaken(problem: string | null, unbound: boolean) {
+    const { count } = this.fixesInFlight!;
+    this.fixesInFlight = null;
+    const g = this.fixQueue[0];
+    if (g) {
+      g.fixes.splice(0, count);
+      if (g.fixes.length === 0) this.fixQueue.shift();
+    }
+    this.saveFixes();
+    const shareProblem = problem ?? (unbound ? 'This tracker is not connected to a boat, so its positions are not kept.' : null);
+    this.update({ fixesWaiting: this.countFixes(), shareProblem });
+    this.flushFixes();
   }
 
   private inFlightGroup(): QueuedFixes | undefined {

@@ -1,12 +1,14 @@
 import { useState, useSyncExternalStore } from 'react';
 import type { RegattaState } from '@brt/engine';
 import type { RegattaClient } from '../lib/client.ts';
-import { PhoneGps } from '../lib/phoneGps.ts';
+import type { GpsSource } from '../lib/phoneGps.ts';
+import type { MeshtasticRelay } from '../lib/meshtastic/relay.ts';
+import { RadioCard } from '../ui/RadioCard.tsx';
 import { clock } from '../lib/format.ts';
 import { Button, Card, ConfirmButton, Field, Pill, inputClass } from '../ui/kit.tsx';
 
 /** A skipper sharing this phone's position for their boat */
-export function TrackTab({ client, regatta, gps, fixesWaiting, shareProblem }: { client: RegattaClient; regatta: RegattaState; gps: PhoneGps; fixesWaiting: number; shareProblem: string | null }) {
+export function TrackTab({ client, regatta, gps, relay, fixesWaiting, shareProblem }: { client: RegattaClient; regatta: RegattaState; gps: GpsSource; relay: MeshtasticRelay; fixesWaiting: number; shareProblem: string | null }) {
   const status = useSyncExternalStore(gps.subscribe, gps.getStatus);
   const me = client.phoneTrackerId;
   const myBoat = Object.values(regatta.boats).find((b) => b.trackerId === me);
@@ -19,6 +21,7 @@ export function TrackTab({ client, regatta, gps, fixesWaiting, shareProblem }: {
 
   if (!myBoat) {
     return (
+      <div className="space-y-4">
       <Card title="Share this phone’s position">
         {allowed ? (
           free.length === 0 ? (
@@ -49,6 +52,8 @@ export function TrackTab({ client, regatta, gps, fixesWaiting, shareProblem }: {
           <p>The race office connects phones in this event. Ask them to connect this phone to your boat; its tracker ID is <span className="font-mono font-bold">{me}</span>.</p>
         )}
       </Card>
+      <RadioCard client={client} regatta={regatta} relay={relay} officer={false} />
+      </div>
     );
   }
 
@@ -58,7 +63,7 @@ export function TrackTab({ client, regatta, gps, fixesWaiting, shareProblem }: {
         {status.sharing ? (
           <Button tone="secondary" onClick={() => gps.stop()}>Stop sharing</Button>
         ) : (
-          <Button tone="primary" disabled={!PhoneGps.available()} onClick={() => gps.start(me)}>Start sharing my position</Button>
+          <Button tone="primary" disabled={!gps.available()} onClick={() => gps.start(me)}>Start sharing my position</Button>
         )}
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
           <dt className="text-muted">Last position</dt>
@@ -74,12 +79,16 @@ export function TrackTab({ client, regatta, gps, fixesWaiting, shareProblem }: {
         </dl>
         {status.problem && <p role="alert" className="text-stop font-semibold">{status.problem}</p>}
         {shareProblem && <p role="alert" className="text-stop font-semibold">{shareProblem}</p>}
+        {status.needsSettings && gps.openSettings && <Button onClick={() => gps.openSettings!()}>Open the app’s settings</Button>}
         {status.sharing && (
           <p className="text-sm text-muted">
-            {status.screenKeptOn ? 'The screen stays on while sharing.' : 'Keep the screen on.'} In a browser, sharing stops when the phone locks; the Android app keeps going with the screen off.
+            {status.background
+              ? 'Sharing carries on with the screen off. A notification shows while it does.'
+              : `${status.screenKeptOn ? 'The screen stays on while sharing.' : 'Keep the screen on.'} In a browser, sharing stops when the phone locks; the Android app keeps going with the screen off.`}
           </p>
         )}
       </Card>
+      <RadioCard client={client} regatta={regatta} relay={relay} officer={false} />
       <ConfirmButton
         label="Disconnect this phone"
         confirm={`Disconnect from ${myBoat.sailNumber}`}

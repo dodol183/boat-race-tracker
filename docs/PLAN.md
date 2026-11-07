@@ -1,7 +1,7 @@
 # TMTRAC rebuild plan
 
 A smaller app built around the server, reusing the parts of today's code that are tested.
-Status: phases 1–3 built (engine, server, screens); phase 4a (tracking on the website) built; 4b (Bluetooth trackers, Android app) next. Code lives in
+Status: phases 1–3 built (engine, server, screens); phases 4a–4b (tracking, Meshtastic over Bluetooth, the Android app as a debug APK) built; next, test on the water. Play Store waits until it's needed. Code lives in
 `dodol183/boat-race-tracker`, hosted on
 cPanel with Node 22, with a phone app for race officers and skippers.
 

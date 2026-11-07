@@ -1,0 +1,55 @@
+# Tests on every push and pull request; then the Android app, as a debug APK to install by hand
+# (Actions → the run → Artifacts). The server address built into the app comes from the repository
+# variable BRT_SERVER_URL (Settings → Secrets and variables → Actions → Variables); without it the
+# app asks for the server on its join screen.
+name: CI
+
+on:
+  push:
+    branches: [main, main-83lcez]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - run: npm ci
+      - name: Build the pages
+        run: npm run build
+        env:
+          VITE_SERVER_URL: ${{ vars.BRT_SERVER_URL }}
+      - name: Copy them into the Android project
+        run: npx cap sync android
+        working-directory: packages/app
+      - name: Build the APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        working-directory: packages/app/android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boat-race-tracker-debug-apk
+          path: packages/app/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

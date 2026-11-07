@@ -33,10 +33,18 @@ view. Anything else waits.
   is the record. Never keep or show positions of a tracker that no boat has: a relay hears
   strangers' radios. Tests use made-up positions near 1°N 1°E; never commit real coordinates.
 
+- **Phone hardware** lives behind small interfaces so the website and the Android app share the
+  screens: `GpsSource` (`PhoneGps` for browsers, `NativeGps` for the app's background service) and
+  `RadioLink` (`openRadio` in `src/lib/meshtastic/bleLink.ts`, the same code for Web Bluetooth and
+  native). `MeshtasticRelay` is tested against `tests/fixtures/techo-rm1-usb.jsonl`, a cleaned
+  recording of a real T-Echo; never add uncleaned radio recordings. `src/lib/platform.ts` decides
+  where the server is (the site, or the address set in the app).
+
 ## Commands
 
 - `npm install`, `npm test`, `npm run typecheck`, `npm run build` (Node 22.13+).
 - `npm run dev -w @brt/app` with the server running on port 3000.
+- The Android APK is built by `.github/workflows/ci.yml` (this environment has no Android SDK).
 
 ## Hosting
 

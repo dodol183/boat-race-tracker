@@ -1,11 +1,7 @@
 // React glue for RegattaClient: one connection per joined regatta, and a ticking clock.
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { RegattaClient } from './client.ts';
-
-export function socketUrl(): string {
-  const { protocol, host } = window.location;
-  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/ws`;
-}
+import { isNativeApp, postFixes, socketUrl } from './platform.ts';
 
 export function safeStorage(): Storage | null {
   try {
@@ -19,16 +15,29 @@ export function safeStorage(): Storage | null {
 }
 
 export function useRegatta(regattaId: string, pin: string | undefined) {
-  const client = useMemo(() => new RegattaClient({ url: socketUrl(), regattaId, ...(pin ? { pin } : {}), storage: safeStorage() }), [regattaId, pin]);
+  const client = useMemo(
+    () =>
+      new RegattaClient({
+        url: socketUrl(),
+        regattaId,
+        storage: safeStorage(),
+        ...(pin ? { pin, postFixes: (trackerId, fixes) => postFixes(regattaId, pin, trackerId, fixes) } : {}),
+      }),
+    [regattaId, pin]
+  );
   useEffect(() => {
     client.connect();
     const lost = () => client.networkLost();
     const back = () => client.networkBack();
+    // In the background the app's socket is throttled; positions go by native HTTP instead
+    const visibility = () => isNativeApp() && client.setFixesOverHttp(document.visibilityState === 'hidden');
     window.addEventListener('offline', lost);
     window.addEventListener('online', back);
+    document.addEventListener('visibilitychange', visibility);
     return () => {
       window.removeEventListener('offline', lost);
       window.removeEventListener('online', back);
+      document.removeEventListener('visibilitychange', visibility);
       client.close();
     };
   }, [client]);

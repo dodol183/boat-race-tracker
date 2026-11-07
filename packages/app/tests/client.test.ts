@@ -35,7 +35,10 @@ class FakeSocket implements SocketLike {
   }
 }
 
-function harness(storage: Map<string, string> = new Map()) {
+type Post = { trackerId: string; fixes: any[]; answer: (r: { ok: boolean; status: number; accepted?: number; error?: string }) => void };
+
+function harness(storage: Map<string, string> = new Map(), withHttp = false) {
+  const posts: Post[] = [];
   const sockets: FakeSocket[] = [];
   const timers: { fn: () => void; ms: number }[] = [];
   const clock = { now: 1_000_000 };
@@ -59,6 +62,7 @@ function harness(storage: Map<string, string> = new Map()) {
       const i = timers.indexOf(t as any);
       if (i >= 0) timers.splice(i, 1);
     },
+    ...(withHttp ? { postFixes: (trackerId: string, fixes: any[]) => new Promise<any>((answer) => posts.push({ trackerId, fixes, answer })) } : {}),
   });
   /** Runs the reconnect timer (the one that isn't the 15 s ping) */
   const fireReconnect = () => {
@@ -67,7 +71,7 @@ function harness(storage: Map<string, string> = new Map()) {
     timers.splice(timers.indexOf(t), 1);
     t.fn();
   };
-  return { client, sockets, timers, clock, storage, fireReconnect, last: () => sockets.at(-1)! };
+  return { client, sockets, timers, clock, storage, fireReconnect, posts, last: () => sockets.at(-1)! };
 }
 
 /** A small regatta state built with the real engine, and its events */
@@ -279,4 +283,51 @@ test('positions wait on the device and go in batches, one at a time, each taken 
   h.last().push({ t: 'positions', full: true, trackers: [{ trackerId: '!a1b2c3d4', fixes: [fix(h.clock.now - 1000)] }] });
   h.last().push({ t: 'positions', trackers: [{ trackerId: '!a1b2c3d4', fixes: [fix(h.clock.now)] }] });
   assert.equal(h.client.getSnapshot().tracks['!a1b2c3d4']!.length, 2);
+});
+
+test('positions go over HTTP when the socket is down or the app is in the background, and wait when HTTP fails too', async () => {
+  const h = harness(new Map(), true);
+  const r = regatta();
+  const tick = () => new Promise((res) => setImmediate(res));
+  const fix = (t: number) => ({ lat: 1, lng: 1, fixTime: t });
+  h.client.connect();
+  h.last().open();
+  h.last().drop();
+  // No socket: HTTP, one batch at a time
+  h.client.shareFixes('phone-abc123', [fix(1), fix(2)]);
+  h.client.shareFixes('phone-abc123', [fix(3)]);
+  assert.equal(h.posts.length, 1);
+  assert.deepEqual(h.posts[0]!.fixes.map((f) => f.fixTime), [1, 2]);
+  // No connection at all: kept, and tried again later
+  h.posts[0]!.answer({ ok: false, status: 0 });
+  await tick();
+  assert.equal(h.client.getSnapshot().fixesWaiting, 3);
+  const retry = h.timers.find((t) => t.ms === 15_000 && h.posts.length === 1)!;
+  h.timers.splice(h.timers.indexOf(retry), 1);
+  retry.fn();
+  assert.equal(h.posts.length, 2);
+  assert.deepEqual(h.posts[1]!.fixes.map((f) => f.fixTime), [1, 2], 'the same batch again');
+  h.posts[1]!.answer({ ok: true, status: 200, accepted: 2 });
+  await tick();
+  assert.deepEqual(h.posts[2]!.fixes.map((f) => f.fixTime), [3], 'then what came meanwhile');
+  h.posts[2]!.answer({ ok: true, status: 200, accepted: 1 });
+  await tick();
+  assert.equal(h.client.getSnapshot().fixesWaiting, 0);
+
+  // Back online but in the background: still HTTP, not the socket
+  h.fireReconnect();
+  h.last().open();
+  h.last().push({ t: 'welcome', regattaId: 'ABC123', name: 'T', role: 'SKIPPER', seq: 2, serverTime: 0, state: r.state });
+  h.client.setFixesOverHttp(true);
+  h.client.shareFixes('phone-abc123', [fix(4)]);
+  assert.equal(h.last().of('positions').length, 0);
+  assert.equal(h.posts.length, 4);
+  // Turned away (a wrong PIN): dropped, and the reason shown
+  h.posts[3]!.answer({ ok: false, status: 401, error: 'That PIN is not right for this regatta.' });
+  await tick();
+  assert.deepEqual([h.client.getSnapshot().fixesWaiting, h.client.getSnapshot().shareProblem], [0, 'That PIN is not right for this regatta.']);
+  // In front again: the socket
+  h.client.setFixesOverHttp(false);
+  h.client.shareFixes('phone-abc123', [fix(5)]);
+  assert.equal(h.last().of('positions').length, 1);
 });

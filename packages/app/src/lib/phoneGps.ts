@@ -12,6 +12,20 @@ export interface GpsStatus {
   problem?: string;
   /** The screen is kept on while sharing (the website stops when it locks) */
   screenKeptOn: boolean;
+  /** Keeps sharing with the screen off (the Android app) */
+  background?: boolean;
+  /** The fix is in the phone's settings (location not allowed) */
+  needsSettings?: boolean;
+}
+
+/** This phone's GPS, from the browser or the Android app */
+export interface GpsSource {
+  subscribe(l: () => void): () => void;
+  getStatus(): GpsStatus;
+  available(): boolean;
+  start(trackerId: string): void | Promise<void>;
+  stop(): void;
+  openSettings?(): void;
 }
 
 /** One fix at most this often: plenty for a boat, light on battery and data */
@@ -24,7 +38,7 @@ const MS_TO_KT = 1.943844;
 
 type WakeLock = { release(): Promise<void>; addEventListener?(t: string, fn: () => void): void };
 
-export class PhoneGps {
+export class PhoneGps implements GpsSource {
   private status: GpsStatus = { sharing: false, screenKeptOn: false };
   private listeners = new Set<() => void>();
   private watchId: number | null = null;
@@ -45,6 +59,7 @@ export class PhoneGps {
   static available(): boolean {
     return typeof navigator !== 'undefined' && 'geolocation' in navigator;
   }
+  available = () => PhoneGps.available();
 
   start(trackerId: string) {
     if (this.status.sharing) return;

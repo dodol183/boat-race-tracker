@@ -14,7 +14,7 @@ show what the server sends back. The plan, scope and phases are in [docs/PLAN.md
 |---|---|---|
 | [`packages/engine`](packages/engine) | Racing rules as pure functions: start sequence, AP, general and individual recall, finishes, penalty codes, corrected time, race and series scoring (RRS Appendix A) | Phase 1 done; GPS suggestions (4a), with tests |
 | [`packages/server`](packages/server) | Node server: runs the engine, stores every event in SQLite, keeps devices in step over WebSocket | Phase 2: done, with tests |
-| [`packages/app`](packages/app) | React app for the race office (start, finishes, map, results, setup) and for skippers (live, track, results) and spectators (live map, results). Works offline: commands and positions wait on the device and go when the connection is back | Phases 3 and 4a: website and tracking done, with tests. Bluetooth trackers and the Android app (Capacitor) are phase 4b |
+| [`packages/app`](packages/app) | React app for the race office (start, finishes, map, results, setup) and for skippers (live, track, results) and spectators (live map, results). Works offline: commands and positions wait on the device and go when the connection is back | Phases 3–4b: website, tracking, Meshtastic radios over Bluetooth, and the Android app (Capacitor), with tests |
 
 ## Develop
 
@@ -66,6 +66,20 @@ The PIN decides the role: race officer (commands), skipper or spectator (watch).
 - With the start line and first mark set (Setup, Course), the server tells the race office which
   boats GPS places over the line at the gun, and when boats cross the finish line. These are
   suggestions: the race office records finishes and raises X.
+
+## The Android app
+
+The same pages, packaged with Capacitor in `packages/app/android`. It adds what a website can't do:
+sharing the phone's position with the screen off (a foreground service with a notification) and
+native Bluetooth to Meshtastic radios. The website does Bluetooth too, in Chrome.
+
+- **Get it:** every push builds a debug APK on GitHub Actions (the CI workflow, Artifacts:
+  `boat-race-tracker-debug-apk`). Install it on an Android phone (allow installing from this
+  source when asked). Each build is signed with a new debug key, so uninstall the previous one first.
+- **Server:** set the repository variable `BRT_SERVER_URL` (e.g. `https://race.yourclub.org`) to
+  build it into the app; otherwise the app asks for it on the join screen.
+- **Build it yourself:** with Android Studio or the Android SDK and Java 21:
+  `npm run build && cd packages/app && npx cap sync android && cd android && ./gradlew assembleDebug`.
 
 ## How the engine works
 

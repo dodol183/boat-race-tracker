@@ -3,9 +3,11 @@ import type { RegattaClient } from '../../lib/client.ts';
 import { useServerNow } from '../../lib/useRegatta.ts';
 import { Card, Pill } from '../../ui/kit.tsx';
 import { RaceMap } from '../../ui/RaceMap.tsx';
+import { RadioCard } from '../../ui/RadioCard.tsx';
+import type { MeshtasticRelay } from '../../lib/meshtastic/relay.ts';
 
 /** The course and the boats, and which boats are being tracked: the check before a start */
-export function MapTab({ client, regatta, tracks }: { client: RegattaClient; regatta: RegattaState; tracks: Record<string, Fix[]> }) {
+export function MapTab({ client, regatta, tracks, relay }: { client: RegattaClient; regatta: RegattaState; tracks: Record<string, Fix[]>; relay: MeshtasticRelay }) {
   const now = useServerNow(client, 1000);
   const boats = Object.values(regatta.boats).sort((a, b) => a.sailNumber.localeCompare(b.sailNumber, undefined, { numeric: true }));
   return (
@@ -42,6 +44,7 @@ export function MapTab({ client, regatta, tracks }: { client: RegattaClient; reg
         )}
         <p className="text-sm text-muted">LoRa trackers report about every 30 seconds; phones every few seconds.</p>
       </Card>
+      <RadioCard client={client} regatta={regatta} relay={relay} officer />
     </div>
   );
 }

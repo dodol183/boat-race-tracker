@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Boat Race Tracker</string>
+    <string name="title_activity_main">Boat Race Tracker</string>
+    <string name="package_name">org.boatracetracker.app</string>
+    <string name="custom_url_scheme">org.boatracetracker.app</string>
+    <!-- The notification shown while the app shares the boat's position with the screen off -->
+    <string name="capacitor_background_geolocation_notification_channel_name">Sharing your position</string>
+    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
+</resources>

@@ -9,7 +9,9 @@ import { SetupTab } from './officer/SetupTab.tsx';
 import { LiveTab } from './LiveTab.tsx';
 import { TrackTab } from './TrackTab.tsx';
 import { MapTab } from './officer/MapTab.tsx';
-import { PhoneGps } from '../lib/phoneGps.ts';
+import { createGps } from '../lib/gps.ts';
+import { MeshtasticRelay } from '../lib/meshtastic/relay.ts';
+import { openRadio } from '../lib/meshtastic/bleLink.ts';
 
 type Tab = 'start' | 'finishes' | 'map' | 'results' | 'setup' | 'live' | 'track';
 
@@ -35,8 +37,10 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
   const officer = snap.role === 'OFFICER';
   const tabs = officer ? OFFICER_TABS : snap.role === 'SKIPPER' ? SKIPPER_TABS : WATCH_TABS;
   // One GPS per joined regatta, so sharing carries on while other tabs are open
-  const gps = useMemo(() => new PhoneGps(client), [client]);
+  const gps = useMemo(() => createGps(client), [client]);
   useEffect(() => () => gps.stop(), [gps]);
+  const relay = useMemo(() => new MeshtasticRelay({ connect: openRadio, share: (id, fixes) => client.shareFixes(id, fixes), now: () => client.serverNow() }), [client]);
+  useEffect(() => () => void relay.stop(), [relay]);
   const [tab, setTab] = useState<Tab>(officer ? 'start' : 'live');
 
   // A wrong code or PIN: back to the join screen, saying why
@@ -108,13 +112,13 @@ export function RegattaScreen({ joined, onLeave }: { joined: Joined; onLeave: (w
         ) : tab === 'finishes' ? (
           <FinishesTab client={client} regatta={snap.regatta} pending={snap.pending} suggested={snap.suggestions.finishes} />
         ) : tab === 'map' ? (
-          <MapTab client={client} regatta={snap.regatta} tracks={snap.tracks} />
+          <MapTab client={client} regatta={snap.regatta} tracks={snap.tracks} relay={relay} />
         ) : tab === 'setup' ? (
           <SetupTab client={client} regatta={snap.regatta} heard={snap.heard} tracks={snap.tracks} />
         ) : tab === 'results' ? (
           <ResultsTab client={client} regatta={snap.regatta} />
         ) : tab === 'track' ? (
-          <TrackTab client={client} regatta={snap.regatta} gps={gps} fixesWaiting={snap.fixesWaiting} shareProblem={snap.shareProblem} />
+          <TrackTab client={client} regatta={snap.regatta} gps={gps} relay={relay} fixesWaiting={snap.fixesWaiting} shareProblem={snap.shareProblem} />
         ) : (
           <LiveTab client={client} regatta={snap.regatta} tracks={snap.tracks} />
         )}
