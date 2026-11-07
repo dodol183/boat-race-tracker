@@ -1,0 +1,11 @@
+{
+  "name": "@brt/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Race rules: start sequences, recalls, finishes, penalties and scoring. Pure functions, no I/O.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --import tsx --test tests/*.test.ts"
+  }
+}
