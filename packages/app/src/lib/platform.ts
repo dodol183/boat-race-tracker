@@ -42,16 +42,16 @@ export function socketUrl(): string {
  * Sends positions over plain HTTP, for when the socket is down or the app is in the background
  * (Android throttles the WebView's own requests there; the app's native HTTP isn't).
  */
-export async function postFixes(regattaId: string, pin: string, trackerId: string, fixes: Fix[]): Promise<{ ok: boolean; status: number; accepted?: number; unbound?: boolean; error?: string }> {
+export async function postFixes(regattaId: string, pin: string, trackerId: string, fixes: Fix[], secret?: string): Promise<{ ok: boolean; status: number; accepted?: number; unbound?: boolean; error?: string }> {
   const url = `${serverOrigin()}/api/regattas/${encodeURIComponent(regattaId)}/positions`;
   const headers = { 'content-type': 'application/json', 'x-regatta-pin': pin };
   try {
     if (isNativeApp()) {
-      const r = await CapacitorHttp.post({ url, headers, data: { trackerId, fixes }, connectTimeout: 15_000, readTimeout: 15_000 });
+      const r = await CapacitorHttp.post({ url, headers, data: { trackerId, fixes, ...(secret ? { secret } : {}) }, connectTimeout: 15_000, readTimeout: 15_000 });
       const body = typeof r.data === 'string' ? safeJson(r.data) : r.data;
       return { ok: r.status >= 200 && r.status < 300, status: r.status, ...body };
     }
-    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ trackerId, fixes }) });
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ trackerId, fixes, ...(secret ? { secret } : {}) }) });
     const body = await r.json().catch(() => ({}));
     return { ok: r.ok, status: r.status, ...body };
   } catch {

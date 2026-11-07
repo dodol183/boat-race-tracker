@@ -64,9 +64,9 @@ function harness(storage: Map<string, string> = new Map(), withHttp = false) {
     },
     ...(withHttp ? { postFixes: (trackerId: string, fixes: any[]) => new Promise<any>((answer) => posts.push({ trackerId, fixes, answer })) } : {}),
   });
-  /** Runs the reconnect timer (the one that isn't the 15 s ping) */
+  /** Runs the reconnect timer (a backoff pause: shorter than the 15 s ping and the other timers) */
   const fireReconnect = () => {
-    const t = timers.find((x) => x.ms !== 15_000);
+    const t = timers.find((x) => x.ms < 15_000);
     assert.ok(t, 'a reconnect is scheduled');
     timers.splice(timers.indexOf(t), 1);
     t.fn();
@@ -330,4 +330,61 @@ test('positions go over HTTP when the socket is down or the app is in the backgr
   h.client.setFixesOverHttp(false);
   h.client.shareFixes('phone-abc123', [fix(5)]);
   assert.equal(h.last().of('positions').length, 1);
+});
+
+test('“try again” keeps the command and the positions and sends them again; a batch with no answer goes again', () => {
+  const h = harness();
+  const r = regatta();
+  h.client.connect();
+  h.last().open();
+  h.last().push({ t: 'welcome', regattaId: 'ABC123', name: 'T', role: 'SKIPPER', seq: 2, serverTime: 0, state: r.state });
+  const fire = (ms: number) => {
+    const t = h.timers.find((x) => x.ms === ms)!;
+    assert.ok(t, `a ${ms} ms timer`);
+    h.timers.splice(h.timers.indexOf(t), 1);
+    t.fn();
+  };
+
+  // A finish tap the server couldn't save
+  void h.client.send({ type: 'removeBoat', boatId: 'a' });
+  const cmd = h.last().of('command')[0];
+  h.last().push({ t: 'result', id: cmd.id, ok: false, retry: true, error: { code: 'TRY_AGAIN', message: 'The server could not save that just now.' } });
+  assert.equal(h.client.getSnapshot().pending.length, 1, 'still waiting to send');
+  assert.equal(h.client.getSnapshot().notice, null, 'not shown as refused');
+  fire(5000);
+  assert.deepEqual(h.last().of('command').map((c) => c.id), [cmd.id, cmd.id], 'the same command again');
+
+  // This phone's own positions carry its secret; a radio's don't
+  h.client.shareFixes(h.client.phoneTrackerId, [{ lat: 1, lng: 1, fixTime: 1000 }]);
+  const mine = h.last().of('positions')[0];
+  assert.equal(mine.secret, h.client.phoneSecret);
+  assert.match(h.client.phoneSecret, /^[0-9a-f]{32}$/);
+  h.last().push({ t: 'positionsAck', id: mine.id, accepted: 0, retry: true });
+  assert.equal(h.client.getSnapshot().fixesWaiting, 1);
+  fire(5000);
+  const again = h.last().of('positions')[1];
+  assert.deepEqual(again.fixes, mine.fixes);
+  // No answer at all: after 45 s it goes once more
+  fire(45_000);
+  assert.equal(h.last().of('positions').length, 3);
+  h.last().push({ t: 'positionsAck', id: h.last().of('positions')[2].id, accepted: 1 });
+  assert.equal(h.client.getSnapshot().fixesWaiting, 0);
+  h.client.shareFixes('!a1b2c3d4', [{ lat: 1, lng: 1, fixTime: 2000 }]);
+  assert.equal(h.last().of('positions')[3].secret, undefined);
+});
+
+test('server clock: a stale estimate is replaced after 10 minutes, so a jump doesn’t stick', () => {
+  const h = harness();
+  h.client.connect();
+  h.last().open();
+  const first = h.last().of('ping')[0];
+  h.clock.now += 100; // quick round trip, server 5 s ahead
+  h.last().push({ t: 'pong', clientTime: first.clientTime, serverTime: first.clientTime + 50 + 5000 });
+  assert.equal(h.client.serverNow() - h.clock.now, 5000);
+  // Ten minutes on, the server's clock (or the path to it) has moved: a slower trip still counts
+  h.clock.now += 10 * 60_000 + 1;
+  const sent = h.clock.now;
+  h.clock.now += 400;
+  h.last().push({ t: 'pong', clientTime: sent, serverTime: sent + 200 + 7000 });
+  assert.equal(h.client.serverNow() - h.clock.now, 7000);
 });

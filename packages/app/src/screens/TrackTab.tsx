@@ -33,7 +33,7 @@ export function TrackTab({ client, regatta, gps, relay, fixesWaiting, shareProbl
                 e.preventDefault();
                 if (!choice) return;
                 setBusy(true);
-                await client.send({ type: 'claimTracker', boatId: choice, trackerId: me });
+                await client.send({ type: 'claimTracker', boatId: choice, trackerId: me, secret: client.phoneSecret });
                 setBusy(false);
               }}
             >
@@ -94,7 +94,7 @@ export function TrackTab({ client, regatta, gps, relay, fixesWaiting, shareProbl
         confirm={`Disconnect from ${myBoat.sailNumber}`}
         onConfirm={() => {
           gps.stop();
-          void client.send({ type: 'releaseTracker', boatId: myBoat.id, trackerId: me });
+          void client.send({ type: 'releaseTracker', boatId: myBoat.id, trackerId: me, secret: client.phoneSecret });
         }}
       />
     </div>

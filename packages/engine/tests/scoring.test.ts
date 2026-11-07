@@ -26,7 +26,7 @@ function race(g: Regatta, startMin: number, finishes: Record<string, number | 'D
   return g.race(raceId);
 }
 
-test('race results: ranked on corrected time; codes score entries + 1', () => {
+test('race results: ranked on corrected time; codes score the series entries + 1', () => {
   const g = fleet();
   // a 1.0 at 60 min = 3600; b 1.1 at 55 min = 3630; c 0.9 retired
   const r = race(g, 0, { a: 60, b: 55, c: 'RET' });
@@ -68,9 +68,10 @@ test('discards: none until 4 races, then one', () => {
 test('series: totals, the worst score discarded from race 4, a boat that missed a race scores DNC', () => {
   const g = fleet(); // a 1.0, b 1.1, c 0.9
   race(g, 0, { a: 60, b: 70, c: 80 }); // corrected a 60, c 72, b 77 → a1 c2 b3
-  race(g, 200, { a: 'DNF', b: 60, c: 70 }); // c 63, b 66 → c1 b2, a DNF = 4
-  race(g, 400, { a: 60, b: 'OCS', c: 80 }); // a 60, c 72 → a1 c2, b OCS = 4
-  // Delta joins after three races: DNC in those (4 boats in the class + 1 = 5)
+  race(g, 200, { a: 'DNF', b: 60, c: 70 }); // c 63, b 66 → c1 b2, a DNF
+  race(g, 400, { a: 60, b: 'OCS', c: 80 }); // a 60, c 72 → a1 c2, b OCS
+  // Delta joins after three races: DNC in those. Codes score the boats entered in the series plus
+  // one (A5.2): 4 + 1 = 5, for Delta's DNCs and for Alpha's DNF and Bravo's OCS alike
   g.do({ type: 'saveBoat', boat: { id: 'd', classId: 'c1', sailNumber: 'MAS 44', name: 'Delta', rating: 1 } }, g.at(590));
   race(g, 600, { a: 60, b: 61, c: 62, d: 50 }); // d 50, c 55.8, a 60, b 67.1 → d1 c2 a3 b4
 
@@ -79,10 +80,10 @@ test('series: totals, the worst score discarded from race 4, a boat that missed 
     rows.map((r) => [r.sailNumber, r.scores.map((s) => (s.discarded ? `[${s.points}]` : `${s.points}`)).join(' '), r.total, r.net, r.rank]),
     [
       // Alpha and Charlie tie on 5; Alpha's kept scores 1,1,3 beat Charlie's 1,2,2 (A8.1)
-      ['MAS 11', '1 [4] 1 3', 9, 5, 1],
+      ['MAS 11', '1 [5] 1 3', 10, 5, 1],
       ['MAS 33', '[2] 1 2 2', 7, 5, 2],
       // Equal worst scores: the earlier one is discarded
-      ['MAS 22', '3 2 [4] 4', 13, 9, 3],
+      ['MAS 22', '3 2 [5] 4', 14, 9, 3],
       ['MAS 44', '[5] 5 5 1', 16, 11, 4],
     ]
   );

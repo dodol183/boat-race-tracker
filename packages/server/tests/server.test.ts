@@ -207,9 +207,15 @@ test('server: regattas, roles, commands, resends, catch-up, the gun and restarts
 test('server: wrong PINs are limited per address and regatta', { timeout: 30_000 }, async () => {
   const server = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN });
   const reg = server.store.createRegatta('PIN test', Date.now());
-  const d = new Device(server.port);
+  // 30 wrong tries from one address (over a few connections: each may join 20 times a minute)
+  let d = new Device(server.port);
   await d.open();
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 30; i++) {
+    if (i % 15 === 0 && i > 0) {
+      d.close();
+      d = new Device(server.port);
+      await d.open();
+    }
     d.send({ t: 'hello', regattaId: reg.id, pin: '0000000' });
     assert.equal((await d.next('error')).code, 'WRONG_PIN');
   }
@@ -423,7 +429,7 @@ test('server: a made-up X-Forwarded-For doesn’t dodge the PIN limit, and a flo
         ws.on('error', reject);
       });
     const codes: string[] = [];
-    for (let i = 0; i < 11; i++) codes.push(await tryPin(`10.0.0.${i}`));
+    for (let i = 0; i < 31; i++) codes.push(await tryPin(`10.0.0.${i}`));
     assert.equal(codes.at(-1), 'TOO_MANY_PIN_TRIES');
 
     // 300 messages in 10 s is the most; the next closes the socket
@@ -432,6 +438,77 @@ test('server: a made-up X-Forwarded-For doesn’t dodge the PIN limit, and a flo
     const closed = new Promise<number>((r) => flood.once('close', (code) => r(code)));
     for (let i = 0; i < 301; i++) flood.send(JSON.stringify({ t: 'ping', clientTime: i }));
     assert.equal(await closed, 1008);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('server: only the phone that connected to a boat can move it or disconnect it', { timeout: 30_000 }, async () => {
+  const srv = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN });
+  try {
+    const reg = srv.store.createRegatta('Keys', Date.now());
+    const officer = new Device(srv.port);
+    const mine = new Device(srv.port);
+    const other = new Device(srv.port);
+    await Promise.all([officer.open(), mine.open(), other.open()]);
+    await officer.hello(reg.id, reg.officerPin);
+    await mine.hello(reg.id, reg.skipperPin);
+    await other.hello(reg.id, reg.skipperPin);
+    await officer.command('o1', { type: 'saveClass', class: { id: 'c1', name: 'C', ratingSystem: 'IRC' } });
+    await officer.command('o2', { type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 11', name: '', rating: 1 } });
+    await officer.command('o3', { type: 'setOptions', options: { skippersConnectTrackers: true } });
+    const claim = await mine.command('m1', { type: 'claimTracker', boatId: 'a', trackerId: 'phone-mine01', secret: 'my-secret-123' });
+    assert.equal(claim.ok, true);
+    await officer.at(4);
+    assert.match(officer.state!.boats.a!.trackerKey!, /^[0-9a-f]{64}$/, 'the server keeps a hash');
+    assert.ok(!JSON.stringify(srv.store.events(reg.id)).includes('my-secret-123'), 'and never the secret');
+
+    const fix = { lat: 1, lng: 1, fixTime: Date.now() - 1000 };
+    other.send({ t: 'positions', id: 'x1', trackerId: 'phone-mine01', fixes: [fix] });
+    assert.equal((await other.next('positionsAck')).error?.code, 'NOT_YOUR_TRACKER');
+    other.send({ t: 'positions', id: 'x2', trackerId: 'phone-mine01', fixes: [fix], secret: 'guess' });
+    assert.equal((await other.next('positionsAck')).error?.code, 'NOT_YOUR_TRACKER');
+    const release = await other.command('x3', { type: 'releaseTracker', boatId: 'a', trackerId: 'phone-mine01' });
+    assert.equal(release.ok ? '' : release.error.code, 'NOT_YOUR_TRACKER');
+
+    mine.send({ t: 'positions', id: 'm2', trackerId: 'phone-mine01', fixes: [fix], secret: 'my-secret-123' });
+    assert.equal((await mine.next('positionsAck')).accepted, 1);
+    assert.equal((await mine.command('m3', { type: 'releaseTracker', boatId: 'a', trackerId: 'phone-mine01', secret: 'my-secret-123' })).ok, true);
+    for (const d of [officer, mine, other]) d.close();
+  } finally {
+    await srv.close();
+  }
+});
+
+test('server: when the database can’t save, the device is told to send again (nothing is lost)', { timeout: 30_000 }, async () => {
+  const srv = await startServer({ port: 0, dbPath: ':memory:', adminToken: ADMIN });
+  try {
+    const reg = srv.store.createRegatta('Busy', Date.now());
+    const d = new Device(srv.port);
+    await d.open();
+    await d.hello(reg.id, reg.officerPin);
+    await d.command('c1', { type: 'saveClass', class: { id: 'c1', name: 'C', ratingSystem: 'IRC' } });
+    await d.command('c2', { type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 11', name: '', rating: 1 } });
+    await d.command('c3', { type: 'bindTracker', boatId: 'a', trackerId: '!a1b2c3d4' });
+    // The disk full for a moment
+    const append = srv.store.append;
+    const addFixes = srv.store.addFixes;
+    srv.store.append = () => {
+      throw new Error('database or disk is full');
+    };
+    srv.store.addFixes = () => {
+      throw new Error('database or disk is full');
+    };
+    const r = (await d.command('c4', { type: 'saveBoat', boat: { id: 'b', classId: 'c1', sailNumber: 'MAS 22', name: '', rating: 1 } })) as any;
+    assert.deepEqual([r.ok, r.retry, r.error.code], [false, true, 'TRY_AGAIN']);
+    d.send({ t: 'positions', id: 'p1', trackerId: '!a1b2c3d4', fixes: [{ lat: 1, lng: 1, fixTime: Date.now() - 1000 }] });
+    const ack = await d.next('positionsAck');
+    assert.deepEqual([ack.retry, ack.error?.code], [true, 'TRY_AGAIN']);
+    // Back to normal: the same command id goes through
+    srv.store.append = append;
+    srv.store.addFixes = addFixes;
+    assert.equal((await d.command('c4', { type: 'saveBoat', boat: { id: 'b', classId: 'c1', sailNumber: 'MAS 22', name: '', rating: 1 } })).ok, true);
+    d.close();
   } finally {
     await srv.close();
   }

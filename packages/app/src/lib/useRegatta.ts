@@ -21,7 +21,7 @@ export function useRegatta(regattaId: string, pin: string | undefined) {
         url: socketUrl(),
         regattaId,
         storage: safeStorage(),
-        ...(pin ? { pin, postFixes: (trackerId, fixes) => postFixes(regattaId, pin, trackerId, fixes) } : {}),
+        ...(pin ? { pin, postFixes: (trackerId, fixes, secret) => postFixes(regattaId, pin, trackerId, fixes, secret) } : {}),
       }),
     [regattaId, pin]
   );

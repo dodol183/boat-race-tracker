@@ -50,7 +50,11 @@ If cPanel offers it anyway, it does nothing harmful.
 ## 4. Check it
 
 1. Open `https://race.yourdomain/api/health`. It should say
-   `{"ok":true, ..., "version":"…", "node":"v22.…"}`.
+   `{"ok":true, ..., "version":"…", "node":"v22.…", "seenAs":"…"}`.
+   - `seenAs` should be your own public address (compare with any "what is my IP" site, on the
+     same connection). If it shows `127.0.0.1` or `?`, the host isn't passing on visitors'
+     addresses: the wrong-PIN limit would then count everyone together. Ask Exabytes to pass the
+     `X-Forwarded-For` header to the Node.js app.
    - A page titled **"Boat Race Tracker isn't running yet"** lists what to fix (Node version,
      `ADMIN_TOKEN`, data folder). Fix it in Setup Node.js App and press **Restart**.
 2. Open `https://race.yourdomain`. Tap **Run a new regatta**, give it a name, enter your

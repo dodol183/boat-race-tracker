@@ -46,6 +46,8 @@ export interface Fix {
  * heard, with positions that can be hours old. 15 min is Meshtastic's default position interval.
  */
 export const MAX_FIX_AGE_MS = 15 * 60_000;
+/** Fixes older than this aren't taken: a phone a day without signal has nothing useful left */
+export const MAX_BACKLOG_MS = 24 * 60 * 60_000;
 /** A fix a little ahead of the server clock is a device clock running fast; more is wrong */
 export const FIX_FUTURE_TOLERANCE_MS = 30_000;
 
@@ -62,7 +64,8 @@ export function cleanFixes(raw: unknown, now: number): Fix[] {
   for (const f of raw) {
     if (!f || typeof f !== 'object' || !isPoint(f) || !isNum((f as Fix).fixTime)) continue;
     const r = f as Fix;
-    if (r.fixTime <= 0 || r.fixTime > now + FIX_FUTURE_TOLERANCE_MS) continue;
+    // A backlog older than a day isn't wanted, and can't be used to fill the database
+    if (r.fixTime < now - MAX_BACKLOG_MS || r.fixTime > now + FIX_FUTURE_TOLERANCE_MS) continue;
     // To the second: plenty for a boat, and a tracker can't store more than one fix a second
     const fix: Fix = { lat: r.lat, lng: r.lng, fixTime: Math.min(Math.round(r.fixTime / 1000) * 1000, Math.floor(now / 1000) * 1000) };
     if (isNum(r.speedKt) && r.speedKt >= 0 && r.speedKt < 100) fix.speedKt = r.speedKt;

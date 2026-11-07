@@ -13,7 +13,7 @@ export type ClientMessage =
   | { t: 'resync' }
   | { t: 'ping'; clientTime: number }
   /** Positions from one tracker (a phone's own GPS, or a radio it relays). Answered by positionsAck. */
-  | { t: 'positions'; id: string; trackerId: string; fixes: unknown[] };
+  | { t: 'positions'; id: string; trackerId: string; fixes: unknown[]; /** A phone's proof it is that tracker */ secret?: string };
 
 /** New fixes per tracker. `full` replaces what the device has (sent after welcome). */
 export interface PositionsUpdate {
@@ -30,11 +30,11 @@ export type ServerMessage =
   | { t: 'welcome'; regattaId: string; name: string; role: Role; /** Only to the race office, to share with skippers */ skipperPin?: string; seq: number; serverTime: number; state?: RegattaState; events?: StoredEvent[] }
   | { t: 'events'; events: StoredEvent[] }
   | { t: 'result'; id: string; ok: true; seq: number; duplicate?: boolean }
-  | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean }
+  | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean; /** Not done; send it again later */ retry?: boolean }
   | { t: 'pong'; clientTime: number; serverTime: number }
   | { t: 'error'; code: string; message: string }
   | ({ t: 'positions' } & PositionsUpdate)
-  | { t: 'positionsAck'; id: string; accepted: number; unbound?: boolean; error?: { code: string; message: string } }
+  | { t: 'positionsAck'; id: string; accepted: number; unbound?: boolean; retry?: boolean; error?: { code: string; message: string } }
   /** Race office only: what GPS suggests */
   | ({ t: 'suggestions' } & Suggestions)
   /** Race office only: trackers heard that no boat has, to connect in Setup */
@@ -74,7 +74,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     case 'positions':
       if (typeof m.id !== 'string' || !COMMAND_ID.test(m.id) || typeof m.trackerId !== 'string') return null;
       if (!Array.isArray(m.fixes) || m.fixes.length > MAX_FIXES_PER_MESSAGE) return null;
-      return { t: 'positions', id: m.id, trackerId: m.trackerId, fixes: m.fixes };
+      if (m.secret !== undefined && (typeof m.secret !== 'string' || m.secret.length > 128)) return null;
+      return { t: 'positions', id: m.id, trackerId: m.trackerId, fixes: m.fixes, ...(m.secret ? { secret: m.secret } : {}) };
     default:
       return null;
   }

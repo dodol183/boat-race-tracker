@@ -35,6 +35,9 @@ view. Anything else waits.
   is the record. Never keep or show positions of a tracker that no boat has: a relay hears
   strangers' radios. Tests use made-up positions near 1°N 1°E; never commit real coordinates.
 
+- **Phone trackers carry a key.** A skipper's phone sends a secret when it connects; the server
+  stores only its SHA-256 (`Boat.trackerKey`), and that phone's positions and disconnecting need the
+  secret. Never store or log the secret itself. Radio trackers can't be authenticated.
 - **Phone hardware** lives behind small interfaces so the website and the Android app share the
   screens: `GpsSource` (`PhoneGps` for browsers, `NativeGps` for the app's background service) and
   `RadioLink` (`openRadio` in `src/lib/meshtastic/bleLink.ts`, the same code for Web Bluetooth and

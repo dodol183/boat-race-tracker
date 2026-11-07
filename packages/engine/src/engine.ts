@@ -23,10 +23,13 @@ export type Command =
   | { type: 'saveBoat'; boat: Omit<Boat, 'trackerId'> }
   | { type: 'removeBoat'; boatId: string }
   | { type: 'bindTracker'; boatId: string; trackerId: string | null }
-  /** A skipper connecting their phone or tracker to a boat with none (when the race office allows it) */
-  | { type: 'claimTracker'; boatId: string; trackerId: string }
-  /** A skipper disconnecting their own phone; knowing its id is the proof */
-  | { type: 'releaseTracker'; boatId: string; trackerId: string }
+  /**
+   * A skipper connecting their phone or tracker to a boat with none (when the race office allows it).
+   * A phone sends its secret; the server keeps only its hash (`key`), and the secret is never stored.
+   */
+  | { type: 'claimTracker'; boatId: string; trackerId: string; key?: string; secret?: string }
+  /** A skipper disconnecting their own phone, with the phone's secret as the proof */
+  | { type: 'releaseTracker'; boatId: string; trackerId: string; key?: string; secret?: string }
   | { type: 'setCourse'; course: Course }
   | { type: 'setOptions'; options: Partial<RegattaOptions> }
   | { type: 'startSequence'; classId: string }
@@ -50,7 +53,7 @@ export type RegattaEvent =
   | { type: 'classRemoved'; classId: string }
   | { type: 'boatSaved'; boat: Omit<Boat, 'trackerId'> }
   | { type: 'boatRemoved'; boatId: string }
-  | { type: 'trackerBound'; boatId: string; trackerId: string | null }
+  | { type: 'trackerBound'; boatId: string; trackerId: string | null; key?: string }
   | { type: 'courseSet'; course: Course }
   | { type: 'optionsSet'; options: RegattaOptions }
   | { type: 'sequenceStarted'; raceId: string; classId: string; number: number; warningAt: number; startAt: number }
@@ -203,7 +206,8 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       if (b.trackerId) return refuse('BOAT_HAS_TRACKER', `${b.sailNumber} already has a tracker. Ask the race office to change it.`);
       const other = Object.values(state.boats).find((o) => o.trackerId === id);
       if (other) return refuse('TRACKER_IN_USE', `This tracker is on ${other.sailNumber}. Ask the race office to move it.`);
-      return accept({ type: 'trackerBound', boatId: b.id, trackerId: id });
+      const key = isPhoneTracker(id) && typeof cmd.key === 'string' && /^[0-9a-f]{64}$/.test(cmd.key) ? cmd.key : undefined;
+      return accept({ type: 'trackerBound', boatId: b.id, trackerId: id, ...(key ? { key } : {}) });
     }
 
     case 'releaseTracker': {
@@ -212,6 +216,8 @@ function decideNow(state: RegattaState, cmd: Command, now: number): Decision {
       if (!b || !id || b.trackerId !== id) return refuse('NOT_YOUR_TRACKER', 'This phone is not connected to that boat.');
       // Only a phone: a radio's id is printed on it, so knowing it proves nothing
       if (!isPhoneTracker(id)) return refuse('ASK_RACE_OFFICE', 'Ask the race office to disconnect a radio tracker.');
+      // A phone the skipper connected: only that phone (its secret) can disconnect it
+      if (b.trackerKey && cmd.key !== b.trackerKey) return refuse('NOT_YOUR_TRACKER', 'This phone is not connected to that boat.');
       return accept({ type: 'trackerBound', boatId: b.id, trackerId: null });
     }
 
@@ -423,7 +429,7 @@ function applyEvent(state: RegattaState, ev: RegattaEvent): RegattaState {
     }
     case 'boatSaved': {
       const prev = state.boats[ev.boat.id];
-      return { ...state, boats: { ...state.boats, [ev.boat.id]: { ...ev.boat, ...(prev?.trackerId ? { trackerId: prev.trackerId } : {}) } } };
+      return { ...state, boats: { ...state.boats, [ev.boat.id]: { ...ev.boat, ...(prev?.trackerId ? { trackerId: prev.trackerId } : {}), ...(prev?.trackerKey ? { trackerKey: prev.trackerKey } : {}) } } };
     }
     case 'boatRemoved': {
       const { [ev.boatId]: _gone, ...boats } = state.boats;
@@ -432,8 +438,8 @@ function applyEvent(state: RegattaState, ev: RegattaEvent): RegattaState {
     case 'trackerBound': {
       const b = state.boats[ev.boatId];
       if (!b) return state;
-      const { trackerId: _old, ...rest } = b;
-      return { ...state, boats: { ...state.boats, [b.id]: ev.trackerId ? { ...rest, trackerId: ev.trackerId } : rest } };
+      const { trackerId: _old, trackerKey: _oldKey, ...rest } = b;
+      return { ...state, boats: { ...state.boats, [b.id]: ev.trackerId ? { ...rest, trackerId: ev.trackerId, ...(ev.key ? { trackerKey: ev.key } : {}) } : rest } };
     }
     case 'courseSet':
       return { ...state, course: ev.course };

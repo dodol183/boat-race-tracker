@@ -20,6 +20,11 @@ export interface Boat {
   rating: number;
   /** The tracker bound to this boat, if any */
   trackerId?: string;
+  /**
+   * When a skipper connected their own phone: the SHA-256 of a secret only that phone holds. Its
+   * positions, and disconnecting it, need the secret (the tracker id itself is public).
+   */
+  trackerKey?: string;
 }
 
 /**

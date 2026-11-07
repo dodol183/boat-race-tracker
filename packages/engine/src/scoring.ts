@@ -26,14 +26,25 @@ export interface RaceResultRow {
 const round = (n: number, digits = 1) => Math.round(n * 10 ** digits) / 10 ** digits;
 
 /**
+ * The boats entered in a class's series: every boat now in the class, and any that sailed one of
+ * its races and has since left. Scoring codes and DNC both count from this (A5.2).
+ */
+export function seriesEntries(state: RegattaState, classId: string): number {
+  const ids = new Set(Object.values(state.boats).filter((b) => b.classId === classId).map((b) => b.id));
+  for (const r of Object.values(state.races)) if (r.classId === classId && r.phase !== 'ABANDONED') for (const id of Object.keys(r.entries)) ids.add(id);
+  return ids.size;
+}
+
+/**
  * Results of one race. Points: finishing place, tied boats sharing the average of the places
- * (A7); a scoring code scores the number of boats entered in the race plus one (A5.2). A boat
- * still OCS is scored OCS even if it finished (A5.1).
+ * (A7); a scoring code scores the number of boats entered in the series plus one (A5.2), so a
+ * boat joining the series later changes it for every race. A boat still OCS is scored OCS even if
+ * it finished (A5.1).
  */
 export function raceResults(state: RegattaState, race: Race): RaceResultRow[] {
   const cls = state.classes[race.classId];
   const entries = Object.values(race.entries);
-  const codePoints = entries.length + 1;
+  const codePoints = seriesEntries(state, race.classId) + 1;
   const boatOf = (id: string): Pick<Boat, 'sailNumber' | 'name' | 'rating'> =>
     state.boats[id] ?? { sailNumber: id, name: '', rating: 1 };
 
@@ -106,7 +117,7 @@ export function discardsFor(races: number, rules: DiscardRule[] = DEFAULT_DISCAR
 
 /**
  * Series standings for a class over its finished races (abandoned ones don't count). A boat with
- * no entry in a race scores DNC: boats in the class plus one (A5.2, A9). Ties are broken by
+ * no entry in a race scores DNC: boats entered in the series plus one (A5.2, A9). Ties are broken by
  * comparing each boat's kept scores from best to worst (A8.1), then by the last race (A8.2).
  */
 export function seriesStandings(state: RegattaState, classId: string, rules: DiscardRule[] = DEFAULT_DISCARDS): SeriesRow[] {
@@ -114,7 +125,7 @@ export function seriesStandings(state: RegattaState, classId: string, rules: Dis
     .filter((r) => r.classId === classId && r.phase === 'FINISHED')
     .sort((a, b) => a.number - b.number);
   const boats = Object.values(state.boats).filter((b) => b.classId === classId);
-  const dncPoints = boats.length + 1;
+  const dncPoints = seriesEntries(state, classId) + 1;
   const results = new Map(races.map((r) => [r.id, new Map(raceResults(state, r).map((row) => [row.boatId, row]))]));
   const nDiscards = discardsFor(races.length, rules);
 

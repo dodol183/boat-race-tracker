@@ -121,3 +121,22 @@ test('fixes: to the second, one per second, however fast a device sends them', (
   const got = cleanFixes(flood, now);
   assert.deepEqual(got.map((f) => f.fixTime), [now - 5000, now - 4000]);
 });
+
+test('a phone a skipper connected keeps its key: only that phone can disconnect it; the race office can move it', () => {
+  const g = fleet();
+  g.do({ type: 'setOptions', options: { skippersConnectTrackers: true } });
+  const key = 'a'.repeat(64);
+  g.do({ type: 'claimTracker', boatId: 'a', trackerId: 'phone-skip01', key });
+  assert.equal(g.state.boats.a!.trackerKey, key);
+  // Editing the boat keeps the key
+  g.do({ type: 'saveBoat', boat: { id: 'a', classId: 'c1', sailNumber: 'MAS 11', name: 'Alpha II', rating: 1.0 } });
+  assert.equal(g.state.boats.a!.trackerKey, key);
+  assert.equal(g.refused({ type: 'releaseTracker', boatId: 'a', trackerId: 'phone-skip01' }), 'NOT_YOUR_TRACKER', 'knowing the id is not enough');
+  assert.equal(g.refused({ type: 'releaseTracker', boatId: 'a', trackerId: 'phone-skip01', key: 'b'.repeat(64) }), 'NOT_YOUR_TRACKER');
+  g.do({ type: 'releaseTracker', boatId: 'a', trackerId: 'phone-skip01', key });
+  assert.equal(g.state.boats.a!.trackerKey, undefined);
+  // A radio has no key; the race office binding something new drops the old key
+  g.do({ type: 'claimTracker', boatId: 'a', trackerId: 'phone-skip01', key });
+  g.do({ type: 'bindTracker', boatId: 'a', trackerId: '!a1b2c3d4' });
+  assert.equal(g.state.boats.a!.trackerKey, undefined);
+});

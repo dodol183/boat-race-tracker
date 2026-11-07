@@ -15,11 +15,11 @@ type ServerMessage =
   | { t: 'welcome'; regattaId: string; name: string; role: Role; skipperPin?: string; seq: number; serverTime: number; state?: RegattaState; events?: StoredEvent[] }
   | { t: 'events'; events: StoredEvent[] }
   | { t: 'result'; id: string; ok: true; seq: number; duplicate?: boolean }
-  | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean }
+  | { t: 'result'; id: string; ok: false; error: { code: string; message: string }; duplicate?: boolean; retry?: boolean }
   | { t: 'pong'; clientTime: number; serverTime: number }
   | { t: 'error'; code: string; message: string }
   | { t: 'positions'; full?: boolean; trackers: { trackerId: string; fixes: Fix[] }[] }
-  | { t: 'positionsAck'; id: string; accepted: number; unbound?: boolean; error?: { code: string; message: string } }
+  | { t: 'positionsAck'; id: string; accepted: number; unbound?: boolean; retry?: boolean; error?: { code: string; message: string } }
   | { t: 'suggestions'; over: OverSuggestion[]; finishes: FinishSuggestion[] }
   | { t: 'heard'; trackers: { trackerId: string; at: number }[] };
 
@@ -90,7 +90,7 @@ export interface ClientOptions {
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
   /** Sends positions over HTTP (with this device's PIN), for when the socket can't */
-  postFixes?: (trackerId: string, fixes: Fix[]) => Promise<{ ok: boolean; status: number; accepted?: number; unbound?: boolean; error?: string }>;
+  postFixes?: (trackerId: string, fixes: Fix[], secret?: string) => Promise<{ ok: boolean; status: number; accepted?: number; unbound?: boolean; error?: string }>;
 }
 
 const OPEN = 1;
@@ -102,6 +102,23 @@ const FIX_QUEUE_MAX = 5000;
 const FIXES_PER_MESSAGE = 200;
 /** After a failed HTTP send, the next try */
 const HTTP_RETRY_MS = 15_000;
+/** The server said "not now": the next try */
+const RETRY_MS = 5000;
+/** A batch of positions with no answer at all: sent again */
+const FIXES_ANSWER_MS = 45_000;
+/** The clock estimate from the quickest round trip is replaced by any newer one after this */
+const CLOCK_ESTIMATE_MS = 10 * 60_000;
+
+/**
+ * Milliseconds that only go forward: wall-clock time when the page started, then a steady count.
+ * A phone whose clock is changed (or corrected by the network) doesn't throw the race clock off.
+ */
+function steadyClock(): () => number {
+  const perf = (globalThis as { performance?: { now(): number } }).performance;
+  if (!perf) return Date.now;
+  const start = Date.now() - perf.now();
+  return () => start + perf.now();
+}
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
 export class RegattaClient {
@@ -117,6 +134,9 @@ export class RegattaClient {
   private lastPing = 0;
   private offsetMs = 0;
   private bestRoundTrip = Infinity;
+  private bestAt = 0;
+  private fixRetryTimer: unknown = null;
+  private fixesAnswerTimer: unknown = null;
   private waiting = new Map<string, (o: CommandOutcome) => void>();
   private counter = 0;
   private fixQueue: QueuedFixes[] = [];
@@ -124,17 +144,18 @@ export class RegattaClient {
   private fixesInFlight: { id: string; count: number; via: 'ws' | 'http' } | null = null;
   /** Positions go over HTTP even while the socket is up (the app in the background) */
   private fixesOverHttp = false;
-  private httpRetryTimer: unknown = null;
   private readonly deviceId: string;
+  private readonly secret: string;
   private readonly now: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (t: unknown) => void;
 
   constructor(private opts: ClientOptions) {
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? steadyClock();
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = opts.clearTimer ?? ((t) => clearTimeout(t as ReturnType<typeof setTimeout>));
     this.deviceId = this.loadDeviceId();
+    this.secret = this.loadSecret();
     const saved = this.load();
     this.snap = {
       status: 'connecting',
@@ -160,6 +181,14 @@ export class RegattaClient {
     return `phone-${this.deviceId}`;
   }
 
+  /**
+   * Proves this phone is the tracker it says (its id is public): sent when connecting to a boat,
+   * disconnecting, and with its positions. The server keeps only a hash of it.
+   */
+  get phoneSecret(): string {
+    return this.secret;
+  }
+
   // ------------------------------------------------------------------ for React (useSyncExternalStore)
 
   subscribe = (listener: () => void) => {
@@ -183,8 +212,8 @@ export class RegattaClient {
 
   close() {
     this.stopped = true;
-    if (this.httpRetryTimer) this.clearTimer(this.httpRetryTimer);
-    this.httpRetryTimer = null;
+    for (const t of [this.fixRetryTimer, this.fixesAnswerTimer]) if (t) this.clearTimer(t);
+    this.fixRetryTimer = this.fixesAnswerTimer = null;
     if (this.reconnectTimer) this.clearTimer(this.reconnectTimer);
     if (this.pingTimer) this.clearTimer(this.pingTimer);
     const ws = this.ws;
@@ -356,6 +385,12 @@ export class RegattaClient {
         return;
       }
       case 'result': {
+        if (!m.ok && m.retry) {
+          // Not done (the server couldn't save it): kept, and sent again shortly
+          const item = this.snap.pending.find((p) => p.id === m.id);
+          if (item) this.setTimer(() => this.snap.pending.includes(item) && this.transmit(item), RETRY_MS);
+          return;
+        }
         const pending = this.snap.pending.filter((p) => p.id !== m.id);
         const notice = m.ok ? this.snap.notice : { kind: 'refused' as const, message: m.error.message, at: this.now() };
         this.update({ pending, notice });
@@ -384,6 +419,7 @@ export class RegattaClient {
       }
       case 'positionsAck': {
         if (this.fixesInFlight?.id !== m.id) return;
+        if (m.retry) return this.fixesLater(RETRY_MS);
         this.fixesTaken(m.error?.message ?? null, !!m.unbound);
         return;
       }
@@ -406,37 +442,62 @@ export class RegattaClient {
   }
 
   private flushFixes() {
-    if (this.fixesInFlight || this.stopped || this.snap.status === 'failed') return;
+    if (this.fixesInFlight || this.fixRetryTimer || this.stopped || this.snap.status === 'failed') return;
     const g = this.fixQueue[0];
     if (!g) return;
     const fixes = g.fixes.slice(0, FIXES_PER_MESSAGE);
     const id = `${this.deviceId}-f${this.now().toString(36)}-${(this.counter++).toString(36)}`;
+    // This phone's own positions carry its secret
+    const secret = g.trackerId === this.phoneTrackerId ? this.secret : undefined;
     const socketUp = this.snap.status === 'live' && !!this.ws && this.ws.readyState === OPEN;
     if (socketUp && !(this.fixesOverHttp && this.opts.postFixes && this.opts.pin)) {
       this.fixesInFlight = { id, count: fixes.length, via: 'ws' };
-      this.ws!.send(JSON.stringify({ t: 'positions', id, trackerId: g.trackerId, fixes }));
+      this.ws!.send(JSON.stringify({ t: 'positions', id, trackerId: g.trackerId, fixes, ...(secret ? { secret } : {}) }));
+      this.awaitFixesAnswer(id);
       return;
     }
     // No socket (or the app in the background): HTTP, if this device has a PIN to send with
-    if (!this.opts.postFixes || !this.opts.pin || this.httpRetryTimer) return;
+    if (!this.opts.postFixes || !this.opts.pin) return;
     this.fixesInFlight = { id, count: fixes.length, via: 'http' };
-    void this.opts.postFixes(g.trackerId, fixes).then((r) => {
+    this.awaitFixesAnswer(id);
+    void this.opts.postFixes(g.trackerId, fixes, secret).then((r) => {
       if (this.fixesInFlight?.id !== id) return;
       if (r.ok) return this.fixesTaken(null, !!r.unbound);
       if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return this.fixesTaken(r.error ?? 'The server turned these positions away.', false);
       // No connection, or the server busy: try again later
-      this.fixesInFlight = null;
-      this.httpRetryTimer = this.setTimer(() => {
-        this.httpRetryTimer = null;
-        this.flushFixes();
-      }, HTTP_RETRY_MS);
+      this.fixesLater(HTTP_RETRY_MS);
     });
+  }
+
+  /** The batch in flight wasn't taken: it stays first in the queue and goes again after `ms` */
+  private fixesLater(ms: number) {
+    this.fixesInFlight = null;
+    if (this.fixesAnswerTimer) this.clearTimer(this.fixesAnswerTimer);
+    this.fixesAnswerTimer = null;
+    if (this.fixRetryTimer) this.clearTimer(this.fixRetryTimer);
+    this.fixRetryTimer = this.setTimer(() => {
+      this.fixRetryTimer = null;
+      this.flushFixes();
+    }, ms);
+  }
+
+  /** No answer at all (a reply lost on the way): send the batch again; the server keeps one of each */
+  private awaitFixesAnswer(id: string) {
+    if (this.fixesAnswerTimer) this.clearTimer(this.fixesAnswerTimer);
+    this.fixesAnswerTimer = this.setTimer(() => {
+      this.fixesAnswerTimer = null;
+      if (this.fixesInFlight?.id !== id) return;
+      this.fixesInFlight = null;
+      this.flushFixes();
+    }, FIXES_ANSWER_MS);
   }
 
   /** The server has the batch in flight (or turned it away, with the reason): on to the next */
   private fixesTaken(problem: string | null, unbound: boolean) {
     const { count } = this.fixesInFlight!;
     this.fixesInFlight = null;
+    if (this.fixesAnswerTimer) this.clearTimer(this.fixesAnswerTimer);
+    this.fixesAnswerTimer = null;
     const g = this.fixQueue[0];
     if (g) {
       g.fixes.splice(0, count);
@@ -481,8 +542,11 @@ export class RegattaClient {
       if (this.bestRoundTrip === Infinity) this.offsetMs = serverTime - this.now();
       return;
     }
-    if (roundTrip <= this.bestRoundTrip) {
+    // The quickest round trip gives the best estimate; after a while any new one replaces it (the
+    // network path changes, and a stale estimate never recovers otherwise)
+    if (roundTrip <= this.bestRoundTrip || this.now() - this.bestAt > CLOCK_ESTIMATE_MS) {
       this.bestRoundTrip = roundTrip;
+      this.bestAt = this.now();
       this.offsetMs = serverTime - (sentAt + roundTrip / 2);
     }
   }
@@ -531,6 +595,23 @@ export class RegattaClient {
       else this.opts.storage?.removeItem(`${this.key()}:fixes`);
     } catch {
       // Full storage: they still go from memory
+    }
+  }
+
+  private loadSecret(): string {
+    const fresh = () => {
+      const bytes = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+    try {
+      const existing = this.opts.storage?.getItem('brt:device-secret');
+      if (existing) return existing;
+      const s = fresh();
+      this.opts.storage?.setItem('brt:device-secret', s);
+      return s;
+    } catch {
+      return fresh();
     }
   }
 

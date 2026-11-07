@@ -39,11 +39,19 @@ const TYPES: Record<string, string> = {
 
 /** Wrong-PIN limit per address and regatta: PINs are short */
 const PIN_WINDOW_MS = 15 * 60_000;
-const PIN_MAX_FAILURES = 10;
+/** High enough that a club's skippers mistyping on one shared wifi don't lock out the race office;
+ * with six-digit PINs still about a year of guessing per address */
+const PIN_MAX_FAILURES = 30;
+/** A device that stops reading: what the server will hold for it before letting it go */
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+/** Joining or asking for the whole state again: a few times a minute is plenty */
+const MAX_JOINS_PER_MINUTE = 20;
 /** Open sockets per address (a club's wifi puts many phones behind one address) */
 const MAX_SOCKETS_PER_ADDRESS = 200;
 /** Messages per socket in 10 s; a phone sends a few, a busy relay a few dozen */
 const MAX_MESSAGES_PER_10S = 300;
+
+const TRY_AGAIN = { code: 'TRY_AGAIN', message: 'The server could not save that just now. It will be sent again.' };
 
 /**
  * The client's address. Behind cPanel's web server the socket is local, so the address comes from
@@ -51,8 +59,20 @@ const MAX_MESSAGES_PER_10S = 300;
  * entries before it.
  */
 function clientAddress(req: http.IncomingMessage): string {
-  const forwarded = (req.headers['x-forwarded-for'] as string | undefined)?.split(',').map((s) => s.trim()).filter(Boolean);
-  return forwarded?.at(-1) || req.socket.remoteAddress || '?';
+  const direct = req.socket.remoteAddress;
+  // Only a proxy on this machine (cPanel's web server) is trusted to say who the client is; a client
+  // talking to us directly could put anything in the header
+  const viaLocalProxy = !direct || direct === '127.0.0.1' || direct === '::1' || direct === '::ffff:127.0.0.1';
+  const forwarded = viaLocalProxy ? (req.headers['x-forwarded-for'] as string | undefined)?.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+  return groupAddress(forwarded?.at(-1) || direct || '?');
+}
+
+/** One IPv6 /64 is one household or phone: counted together, or it could guess without limit */
+function groupAddress(a: string): string {
+  const plain = a.replace(/^::ffff:/, '');
+  if (!plain.includes(':')) return plain;
+  const parts = plain.split('::')[0]!.split(':');
+  return `${parts.slice(0, 4).join(':')}::/64`;
 }
 
 export async function startServer(opts: ServerOptions) {
@@ -83,8 +103,14 @@ export async function startServer(opts: ServerOptions) {
     return 'WRONG';
   };
 
+  let lastPrune = now();
   const timer = setInterval(() => {
     for (const hub of hubs.values()) hub.tick();
+    // Forget wrong-PIN counts once their window has passed
+    if (now() - lastPrune > 60_000) {
+      lastPrune = now();
+      for (const [k, f] of pinFailures) if (now() - f.first >= PIN_WINDOW_MS) pinFailures.delete(k);
+    }
   }, opts.tickMs ?? 250);
 
   // ---------------------------------------------------------------------------------------- HTTP
@@ -126,7 +152,8 @@ export async function startServer(opts: ServerOptions) {
     try {
       if (req.method === 'GET' && url.pathname === '/api/health') {
         // What a deploy check needs: running, which build, which Node (node:sqlite needs 22.13+)
-        return json(res, 200, { ok: true, serverTime: now(), version: process.env.BRT_VERSION ?? 'dev', node: process.version });
+        // seenAs: the address the PIN limit uses for you; it should be your public address (see DEPLOY)
+        return json(res, 200, { ok: true, serverTime: now(), version: process.env.BRT_VERSION ?? 'dev', node: process.version, seenAs: clientAddress(req) });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/regattas') {
@@ -149,7 +176,13 @@ export async function startServer(opts: ServerOptions) {
         const body = await readJson(req);
         if (typeof body.trackerId !== 'string' || !Array.isArray(body.fixes) || body.fixes.length > MAX_FIXES_PER_MESSAGE) return json(res, 400, { error: 'Send trackerId and up to 500 fixes.' });
         hub.tick();
-        const out = hub.acceptPositions(role, body.trackerId, body.fixes);
+        let out;
+        try {
+          out = hub.acceptPositions(role, body.trackerId, body.fixes, typeof body.secret === 'string' ? body.secret : undefined);
+        } catch (err) {
+          console.error('Positions not stored:', err);
+          return json(res, 503, { error: TRY_AGAIN.message, code: TRY_AGAIN.code });
+        }
         return out.ok ? json(res, 200, { accepted: out.accepted, ...(out.unbound ? { unbound: true } : {}) }) : json(res, 400, { error: out.error.message, code: out.error.code });
       }
 
@@ -193,7 +226,20 @@ export async function startServer(opts: ServerOptions) {
     let role: Role = 'SPECTATOR';
     let unsubscribe: (() => void) | undefined;
     const send = (m: ServerMessage) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+      if (ws.readyState !== WebSocket.OPEN) return;
+      // Not reading what it's sent: let it go rather than hold ever more for it
+      if (ws.bufferedAmount > MAX_BUFFERED_BYTES) return ws.terminate();
+      ws.send(JSON.stringify(m));
+    };
+    let joinWindow = now();
+    let joins = 0;
+    /** hello and resync send the whole regatta: limited per socket */
+    const joinAllowed = () => {
+      if (now() - joinWindow > 60_000) {
+        joinWindow = now();
+        joins = 0;
+      }
+      return ++joins <= MAX_JOINS_PER_MINUTE;
     };
 
     ws.on('message', (raw) => {
@@ -220,6 +266,10 @@ export async function startServer(opts: ServerOptions) {
       if (!msg) return send({ t: 'error', code: 'BAD_MESSAGE', message: 'Message not understood.' });
 
       if (msg.t === 'ping') return send({ t: 'pong', clientTime: msg.clientTime, serverTime: now() });
+
+      if ((msg.t === 'hello' || msg.t === 'resync') && !joinAllowed()) {
+        return send({ t: 'error', code: 'SLOW_DOWN', message: 'Too many requests for the whole regatta. Wait a minute.' });
+      }
 
       if (msg.t === 'hello') {
         const target = hubFor(msg.regattaId);
@@ -269,7 +319,14 @@ export async function startServer(opts: ServerOptions) {
       }
 
       if (msg.t === 'positions') {
-        const r = hub.acceptPositions(role, msg.trackerId, msg.fixes);
+        let r;
+        try {
+          r = hub.acceptPositions(role, msg.trackerId, msg.fixes, msg.secret);
+        } catch (err) {
+          // The database busy or full: the device keeps them and sends them again
+          console.error('Positions not stored:', err);
+          return send({ t: 'positionsAck', id: msg.id, accepted: 0, retry: true, error: TRY_AGAIN });
+        }
         return send(r.ok ? { t: 'positionsAck', id: msg.id, accepted: r.accepted, ...(r.unbound ? { unbound: true } : {}) } : { t: 'positionsAck', id: msg.id, accepted: 0, error: r.error });
       }
 
@@ -277,9 +334,10 @@ export async function startServer(opts: ServerOptions) {
         let result;
         try {
           result = hub.handle(role, msg.id, msg.command);
-        } catch {
-          // A command with the right type but a malformed body; nothing was stored
-          result = { ok: false as const, error: { code: 'BAD_COMMAND', message: 'That command could not be read.' } };
+        } catch (err) {
+          // Not stored (the database busy or full): the device keeps the command and sends it again
+          console.error('Command not stored:', err);
+          return send({ t: 'result', id: msg.id, ok: false, retry: true, error: TRY_AGAIN });
         }
         return send({ t: 'result', id: msg.id, ...result } as ServerMessage);
       }
@@ -306,6 +364,8 @@ export async function startServer(opts: ServerOptions) {
         fs.mkdirSync(dir, { recursive: true });
         const day = new Date(now()).toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' });
         store.backup(path.join(dir, `regattas-${day}.db`));
+        // Tracks older than 60 days go; results and the event record stay
+        store.pruneFixes(now() - 60 * 24 * 60 * 60_000);
       } catch (err) {
         console.error('Database backup failed:', err);
       }

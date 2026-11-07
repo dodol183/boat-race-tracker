@@ -1,4 +1,5 @@
 // One regatta on the server: its state, its record of events, and the devices watching it.
+import { createHash } from 'node:crypto';
 import { advance, apply, cleanFixes, decide, emptyRegatta, gpsSuggestions, mergeTrail, trackerId as toTrackerId, type Command, type Fix, type RegattaState } from '@brt/engine';
 import type { CommandRecord, Store, StoredEvent } from './store.ts';
 import type { PositionsUpdate, Suggestions } from './protocol.ts';
@@ -88,8 +89,19 @@ export class RegattaHub {
         return { ok: false, error: { code: 'NOT_ALLOWED', message: 'Only the race office can do that. Unlock with the race officer PIN.' } };
       }
 
+      // A phone's secret becomes its hash here; the secret itself is never stored or decided on
+      if ((command.type === 'claimTracker' || command.type === 'releaseTracker') && typeof command.secret === 'string') {
+        const { secret, ...rest } = command;
+        command = { ...rest, key: keyOf(secret) };
+      }
+      let d: ReturnType<typeof decide>;
       try {
-        const d = decide(this.state, command, receivedAt);
+        d = decide(this.state, command, receivedAt);
+      } catch {
+        // The right type but a body that couldn't be read; nothing stored
+        return { ok: false, error: { code: 'BAD_COMMAND', message: 'That command could not be read.' } };
+      }
+      try {
         if (!d.ok) {
           const result: CommandRecord['result'] = { ok: false, error: d.error };
           this.store.append(this.regattaId, [], { id: commandId, receivedAt, result });
@@ -164,14 +176,17 @@ export class RegattaHub {
   private syncFixes() {
     const since = this.lastFixSync;
     this.lastFixSync = this.now();
-    const byTracker = this.store.fixesReceivedSince(this.regattaId, since - 1000);
+    // A few seconds back: another process times its rows once it has the database, then commits
+    const byTracker = this.store.fixesReceivedSince(this.regattaId, since - 5000);
     const update: PositionsUpdate['trackers'] = [];
+    const cutoff = this.now() - TRAIL_KEEP_MS;
     for (const [id, fixes] of byTracker) {
       const trail = this.trails.get(id) ?? [];
-      const have = new Set(trail.slice(-2000).map((f) => f.fixTime));
-      const fresh = fixes.filter((f) => !have.has(f.fixTime));
+      const have = new Set(trail.slice(-5000).map((f) => f.fixTime));
+      const fresh = fixes.filter((f) => !have.has(f.fixTime) && f.fixTime >= cutoff);
       if (fresh.length === 0) continue;
-      this.trails.set(id, mergeTrail(trail, fresh));
+      const merged = mergeTrail(trail, fresh);
+      this.trails.set(id, merged[0]!.fixTime < cutoff ? merged.filter((f) => f.fixTime >= cutoff) : merged);
       update.push({ trackerId: id, fixes: fresh });
     }
     if (update.length) {
@@ -187,13 +202,18 @@ export class RegattaHub {
    * noted as heard (for the race office to connect) without their positions, since a relay hears
    * every radio on the mesh, strangers' too.
    */
-  acceptPositions(role: Role, rawTrackerId: string, rawFixes: unknown): PositionsResult {
+  acceptPositions(role: Role, rawTrackerId: string, rawFixes: unknown, secret?: string): PositionsResult {
     if (role === 'SPECTATOR') return { ok: false, error: { code: 'NOT_ALLOWED', message: 'Unlock with the skipper or race officer PIN to share positions.' } };
     const id = toTrackerId(rawTrackerId);
     if (!id) return { ok: false, error: { code: 'BAD_TRACKER', message: 'That is not a tracker this app knows.' } };
     const now = this.now();
     const fixes = cleanFixes(rawFixes, now);
-    const bound = Object.values(this.state.boats).some((b) => b.trackerId === id);
+    const boat = Object.values(this.state.boats).find((b) => b.trackerId === id);
+    // A phone the skipper connected: only that phone can move its boat
+    if (boat?.trackerKey && (typeof secret !== 'string' || keyOf(secret) !== boat.trackerKey)) {
+      return { ok: false, error: { code: 'NOT_YOUR_TRACKER', message: 'This phone is not the one connected to that boat.' } };
+    }
+    const bound = !!boat;
     if (!bound) {
       if (fixes.length) {
         this.unbound.delete(id);
@@ -205,7 +225,7 @@ export class RegattaHub {
       return { ok: true, accepted: 0, unbound: true };
     }
     if (fixes.length === 0) return { ok: true, accepted: 0 };
-    this.store.addFixes(this.regattaId, id, fixes, now);
+    this.store.addFixes(this.regattaId, id, fixes, this.now);
     const trail = mergeTrail(this.trails.get(id) ?? [], fixes);
     const cutoff = now - TRAIL_KEEP_MS;
     this.trails.set(id, trail[0]!.fixTime < cutoff ? trail.filter((f) => f.fixTime >= cutoff) : trail);
@@ -285,4 +305,9 @@ export class RegattaHub {
 /** SQLite refusing a row another process wrote first (same event number or command id) */
 function isConflict(err: unknown): boolean {
   return /constraint/i.test(String((err as Error)?.message ?? err));
+}
+
+/** What the server keeps of a phone's secret */
+function keyOf(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
 }

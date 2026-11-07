@@ -117,10 +117,12 @@ export function openStore(path: string) {
     },
 
     /** Fixes from a tracker bound to a boat (others aren't kept: a relay hears strangers' radios too) */
-    addFixes(regattaId: string, trackerId: string, fixes: Fix[], receivedAt: number) {
+    addFixes(regattaId: string, trackerId: string, fixes: Fix[], receivedAt: () => number) {
       db.exec('BEGIN IMMEDIATE');
       try {
-        for (const f of fixes) insertFix.run(regattaId, trackerId, f.fixTime, f.lat, f.lng, f.speedKt ?? null, f.headingDeg ?? null, receivedAt);
+        // Timed once the database is ours: another process waiting to read uses this time to find them
+        const at = receivedAt();
+        for (const f of fixes) insertFix.run(regattaId, trackerId, f.fixTime, f.lat, f.lng, f.speedKt ?? null, f.headingDeg ?? null, at);
         db.exec('COMMIT');
       } catch (err) {
         db.exec('ROLLBACK');
@@ -138,6 +140,11 @@ export function openStore(path: string) {
     fixesReceivedSince(regattaId: string, since: number): Map<string, Fix[]> {
       const rows = db.prepare('SELECT tracker_id, fix_time, lat, lng, speed_kt, heading_deg FROM fixes WHERE regatta_id = ? AND received_at >= ? ORDER BY tracker_id, fix_time').all(regattaId, since) as any[];
       return groupFixes(rows);
+    },
+
+    /** Removes fixes taken before `before` (results and events are never removed) */
+    pruneFixes(before: number) {
+      db.prepare('DELETE FROM fixes WHERE fix_time < ?').run(before);
     },
 
     /** A consistent copy of the whole database, safe while the server runs */
